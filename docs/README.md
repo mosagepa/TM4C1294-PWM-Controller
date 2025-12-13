@@ -100,4 +100,4 @@ This documentation is maintained alongside code development:
 
 ---
 
-**Documentation Version**: 1.0 | **Last Updated**: December 2025 | **Status**: Active Development
+**Documentation Version**: 1.0 | **Last Updated (docs)**: December 2025 | **Status**: Active Development
