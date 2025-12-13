@@ -165,21 +165,44 @@ The diagnostic system provides comprehensive runtime introspection capabilities 
 
 #### Key Functions
 
-##### Variable Inspection
+##### Variable Inspection with Preview Control
 ```c
-void diag_print_variable(const char* name, const void* ptr, size_t size, diag_format_t format)
+void diag_print_variable(const char *name, const void *addr, size_t size, size_t preview_limit)
 ```
-- **Purpose**: Runtime variable state analysis
-- **Formats**: Hexadecimal, decimal, binary, ASCII
-- **Usage**: Critical for debugging complex state machines
+- **Purpose**: Runtime variable state analysis with flexible hex display control
+- **Preview Control**: Last parameter controls partial vs full memory dump
+  - `DIAG_PREVIEW_LIMIT` (32): Truncated preview showing first 32 bytes
+  - `DIAG_PREVIEW_NOLIMIT` ((size_t)-1): Full dump of entire `size` bytes
+- **Usage**: Essential for debugging large buffers and data structures
 
-##### Memory Visualization
+**Convenience Wrapper:**
 ```c
-void diag_hex_dump(const void* data, size_t length, uint32_t base_address)
+void diag_print_variable_default(const char *name, const void *addr, size_t size)
 ```
-- **Purpose**: Raw memory content inspection
-- **Format**: Industry-standard hex dump with ASCII representation
-- **Applications**: Buffer analysis, memory corruption detection
+- **Purpose**: Quick variable inspection using default 32-byte preview limit
+- **Implementation**: Inline wrapper calling `diag_print_variable()` with `DIAG_PREVIEW_LIMIT`
+
+**Usage Examples:**
+```c
+// Quick preview (32 bytes max) - ideal for initial inspection
+diag_print_variable("cmd_buffer", buffer, 256, DIAG_PREVIEW_LIMIT);
+
+// Full memory dump - for complete analysis
+diag_print_variable("heap_block", malloc_ptr, 1024, DIAG_PREVIEW_NOLIMIT);
+
+// Convenient default wrapper
+diag_print_variable_default("pwm_config", &config, sizeof(config));
+```
+
+##### Memory Visualization Functions
+```c
+void diag_print_memory_layout(void)
+void diag_print_sbrk_info(void)
+void diag_print_variables_summary(void)
+```
+- **Purpose**: System-wide memory analysis and heap monitoring
+- **Format**: Structured output showing memory regions, allocation status
+- **Applications**: Memory leak detection, heap fragmentation analysis
 
 ##### Custom sprintf Implementation
 The project includes a custom sprintf family (`diag_simple_sprintf`) that addresses critical runtime stall issues encountered with standard library implementations.

@@ -20,8 +20,8 @@ The Texas Instruments EK-TM4C1294XL is a comprehensive development platform feat
 
 #### Official Product Information
 - **TI Product Page**: [EK-TM4C1294XL LaunchPad](https://www.ti.com/tool/EK-TM4C1294XL)
-- **User Guide**: [SPMU365A - EK-TM4C1294XL User's Guide](https://www.ti.com/lit/ug/spmu365a/spmu365a.pdf)
-- **Schematic**: [EK-TM4C1294XL Schematic (Rev A)](https://www.ti.com/lit/zip/spmu365)
+- **User Guide**: [SPMU373C - EK-TM4C1294XL User's Guide](https://www.ti.com/lit/pdf/spmu373)
+- **Schematic**: [EK-TM4C1294XL Design Files (Rev D)](https://www.ti.com/lit/zip/SPMR241)
 
 ### Core Microcontroller: TM4C1294NCPDT
 
@@ -56,9 +56,9 @@ EEPROM:         0x400AF000 - 0x400AFFFF (6 KB)
 - **[ARM Cortex-M4 Technical Reference Manual](https://developer.arm.com/documentation/100166/0001/)**: Core processor details
 
 #### Application Notes
-- **[AN-2219: TM4C129x GPIO Configuration](https://www.ti.com/lit/an/spma074/spma074.pdf)**
-- **[AN-2220: TM4C129x Timer Configuration](https://www.ti.com/lit/an/spma075/spma075.pdf)**
-- **[AN-2221: TM4C129x UART Configuration](https://www.ti.com/lit/an/spma076/spma076.pdf)**
+- **[System Design Guidelines for TM4C129x Family](https://www.ti.com/lit/pdf/spma097)**: Hardware design best practices
+- **[TM4C129x Ethernet Applications for lwIP](https://www.ti.com/lit/pdf/spma070)**: Network connectivity implementation
+- **[TM4C129x Ethernet Applications for TI-RTOS NDK](https://www.ti.com/lit/pdf/spma069)**: Real-time network applications
 
 ---
 

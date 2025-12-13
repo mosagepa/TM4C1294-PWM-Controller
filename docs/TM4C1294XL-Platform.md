@@ -22,8 +22,8 @@ The EK-TM4C1294XL represents Texas Instruments' flagship development platform fo
 
 #### Official TI Resources
 - **Product Page**: [ti.com/tool/EK-TM4C1294XL](https://www.ti.com/tool/EK-TM4C1294XL)
-- **Quick Start Guide**: [SPMU365A](https://www.ti.com/lit/ug/spmu365a/spmu365a.pdf)
-- **Hardware Design Files**: [Complete schematics and layout](https://www.ti.com/lit/zip/spmu365)
+- **User Guide**: [SPMU373C](https://www.ti.com/lit/pdf/spmu373)
+- **Hardware Design Files**: [Complete schematics and layout](https://www.ti.com/lit/zip/SPMR241)
 - **Software Examples**: [TivaWare for C Series](https://www.ti.com/tool/SW-TM4C)
 
 #### Key Platform Advantages
