@@ -53,10 +53,20 @@ The project history reveals detailed analysis of ATTiny45 limitations:
 
 #### **Physical Implementation**
 Evidence shows complete prototype hardware was constructed:
-- **PrototypeSystemTiny45BoardCompSide.jpg**: Component placement and connections
-- **PrototypeSystemTiny45BoardSolderSide.jpg**: Soldering implementation
-- **PrototypeSystemTiny45Harnesses.jpg**: Wiring harness construction  
-- **PrototypeSystemTiny45TrackerCloseUp.jpg**: Detailed component tracking
+- **[PrototypeSystemTiny45BoardCompSide.jpg](./assets/project-evolution/PrototypeSystemTiny45BoardCompSide.jpg)**: Component placement and connections
+- **[PrototypeSystemTiny45BoardSolderSide.jpg](./assets/project-evolution/PrototypeSystemTiny45BoardSolderSide.jpg)**: Soldering implementation
+- **[PrototypeSystemTiny45Harnesses.jpg](./assets/project-evolution/PrototypeSystemTiny45Harnesses.jpg)**: Wiring harness construction  
+- **[PrototypeSystemTiny45TrackerCloseUp.jpg](./assets/project-evolution/PrototypeSystemTiny45TrackerCloseUp.jpg)**: Detailed component tracking
+
+**ATTiny45 prototype photos**
+
+![ATTiny45 prototype board (component side)](./assets/project-evolution/PrototypeSystemTiny45BoardCompSide.jpg)
+
+![ATTiny45 prototype board (solder side)](./assets/project-evolution/PrototypeSystemTiny45BoardSolderSide.jpg)
+
+![ATTiny45 prototype harnesses](./assets/project-evolution/PrototypeSystemTiny45Harnesses.jpg)
+
+![ATTiny45 prototype tracker close-up](./assets/project-evolution/PrototypeSystemTiny45TrackerCloseUp.jpg)
 
 #### **Key Limitations Discovered**
 - **PWM Resolution**: 8-bit timer provided only 256 steps at 21.5kHz
