@@ -105,7 +105,7 @@ FLASHER_FLAGS=
 #==============================================================================
 
 # Project name (W/O .c extension eg. "main")
-PROJECT_NAME = integr_v02
+PROJECT_NAME = integr_V03
 
 # UART device defaults (override: `make capture UART0_DEV=/dev/ttyACM0 UART3_DEV=/dev/ttyUSB1`)
 UART0_DEV ?= /dev/ttyACM0
@@ -157,7 +157,7 @@ ${PROJECT_NAME}: ${PROJECT_NAME}.axf
 
 # make clean rule
 clean:
-	rm *.bin *.o *.d *.axf *.lst
+	rm -f *.bin *.o *.d *.axf *.lst
 
 
 # Rule to load the project to the board
