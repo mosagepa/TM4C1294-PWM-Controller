@@ -2,6 +2,8 @@
 
 A comprehensive PWM control system for the Texas Instruments TM4C1294XL Tiva C ARM Cortex-M4 microcontroller, featuring custom memory management and UART-based command interface.
 
+> 🤖 **AI Collaboration Insights**: See [GHCP_COMMENTS.md](./GHCP_COMMENTS.md) for detailed AI-assisted development experiences, technical insights, and problem-solving approaches used in this project. This resource documents the embedded systems development journey and serves as a learning guide for similar projects.
+
 ## 🚀 Features
 
 - **PWM Control**: Precise PWM generation with configurable duty cycle (5-96%)
