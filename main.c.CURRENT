@@ -1,0 +1,391 @@
+/*
+  main_V24.c - FINAL: Your working PWM + simple UART from uart_echo.c pattern
+
+  Based on your working pwm.c:
+  - PWM setup and update logic EXACTLY as in pwm.c (no disable/enable on updates)
+  - Simple ISR-based UART echo + line accumulation (like uart_echo.c)
+  - DTR session detection on PQ1
+  - PSYN command parsing
+
+  NO complex line editor, NO FIFO, NO diagnostics overhead.
+  Just clean, working code.
+
+  Build: requires TivaWare DriverLib.
+*/
+
+#define _POSIX_C_SOURCE 200809L
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
+
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_types.h"
+
+#include "driverlib/debug.h"
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/pin_map.h"
+#include "driverlib/rom.h"
+#include "driverlib/rom_map.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/uart.h"
+#include "driverlib/pwm.h"
+#include "drivers/pinout.h"
+#include "utils/uartstdio.h"
+
+uint32_t g_ui32SysClock;
+
+typedef enum UARTDevEnum { UARTDEV_ICDI = 0, UARTDEV_USER } UARTDev;
+
+
+/* Config */
+#define UART_RX_BUF_SIZE 64
+#define PROMPT "> "
+#define TARGET_PWM_FREQ_HZ 21500U
+#define TARGET_DUTY_PERCENT_INIT 30U
+#define PSYN_MIN 5
+#define PSYN_MAX 96
+
+/* DTR detection pin (PQ1) */
+#define DTR_PORT GPIO_PORTQ_BASE
+#define DTR_PIN  GPIO_PIN_1
+
+/* PWM globals - as in your working pwm.c */
+static uint32_t g_pwmPeriod = 0;
+static uint32_t g_pwmPulse  = 0;
+
+/* UART RX buffer - simple accumulator */
+static volatile char user_rx_buf[UART_RX_BUF_SIZE];
+static volatile uint32_t user_rx_len = 0;
+static volatile bool user_cmd_ready = false;
+
+/* Forward declarations */
+static void setup_system_clock(void);
+static void setup_pwm_pf2(void);
+static void set_pwm_percent(uint32_t percent);
+static void setup_uarts(void);
+static void process_user_line(const char *line);
+
+
+void UARTSend(const uint8_t *pui8Buffer, uint32_t ui32Count, UARTDev destUART)
+{
+    while (ui32Count--) {
+        if (destUART == UARTDEV_USER) ROM_UARTCharPut(UART3_BASE, *pui8Buffer++);
+        else ROM_UARTCharPut(UART0_BASE, *pui8Buffer++);
+    }
+}
+
+
+/* ICDI UART0 ISR - echo only */
+void ICDIUARTIntHandler(void)
+{
+    uint32_t ui32Status = ROM_UARTIntStatus(UART0_BASE, true);
+
+    ROM_UARTIntClear(UART0_BASE, ui32Status);
+
+    while (ROM_UARTCharsAvail(UART0_BASE)) {
+
+        ROM_UARTCharPutNonBlocking(UART0_BASE, ROM_UARTCharGetNonBlocking(UART0_BASE));
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, GPIO_PIN_0);
+        SysCtlDelay(g_ui32SysClock / (1000 * 3));
+        GPIOPinWrite(GPIO_PORTN_BASE, GPIO_PIN_0, 0);
+
+    }
+
+}
+
+
+/* USER UART3 ISR - echo + accumulate, exactly as in your pwm.c */
+void USERUARTIntHandler(void)
+{
+    uint32_t ui32Status = ROM_UARTIntStatus(UART3_BASE, true);
+
+    ROM_UARTIntClear(UART3_BASE, ui32Status);
+
+    while (ROM_UARTCharsAvail(UART3_BASE)) {
+
+        uint8_t c = ROM_UARTCharGetNonBlocking(UART3_BASE);
+
+        /* Echo immediately */
+        ROM_UARTCharPutNonBlocking(UART3_BASE, c);
+
+        /* Toggle PF4 LED on each received byte */
+        static uint8_t led = 0;
+        led = !led;
+        ROM_GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, led ? GPIO_PIN_4 : 0);
+
+        if (user_cmd_ready) continue;
+
+        if ((char)c == '\r' || (char)c == '\n') {
+
+            if (user_rx_len > 0) {
+                user_rx_buf[user_rx_len] = '\0';
+                user_cmd_ready = true;
+            } else {
+                /* Empty line - reprint prompt */
+                const char *p = "\r\n> ";
+                while (*p) ROM_UARTCharPutNonBlocking(UART3_BASE, *p++);
+            }
+
+        } else {
+            if (user_rx_len + 1 < UART_RX_BUF_SIZE) {
+                user_rx_buf[user_rx_len++] = (char)c;
+            } else {
+                /* Overflow - reset */
+                user_rx_len = 0;
+                const char *err = "\r\nERROR: line too long\r\n> ";
+                while (*err) ROM_UARTCharPutNonBlocking(UART3_BASE, *err++);
+            }
+        }
+    }
+
+}
+
+
+/* Command processing - exactly as in your pwm.c */
+static void process_user_line(const char *line)
+{
+    /* Skip leading spaces */
+    while (*line && isspace((unsigned char)*line)) line++;
+
+    char buf[UART_RX_BUF_SIZE];
+    strncpy(buf, line, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char *saveptr = NULL;
+    char *tok = strtok_r(buf, " \t", &saveptr);
+    if (!tok) {
+        UARTSend((const uint8_t *)"\r\n> ", 4, UARTDEV_USER);
+        return;
+    }
+
+    /* Case-insensitive PSYN */
+    for (char *p = tok; *p; ++p) *p = (char)toupper((unsigned char)*p);
+
+    if (strcmp(tok, "PSYN") == 0) {
+        char *numtok = strtok_r(NULL, " \t", &saveptr);
+        if (!numtok) {
+            UARTSend((const uint8_t *)"\r\nERROR: missing value. Use: PSYN n  (n=5..96)\r\n> ", 51, UARTDEV_USER);
+            return;
+        }
+
+        char *endptr;
+        long val = strtol(numtok, &endptr, 10);
+        if (*endptr != '\0') {
+            UARTSend((const uint8_t *)"\r\nERROR: invalid number. Use: PSYN n\r\n> ", 41, UARTDEV_USER);
+            return;
+        }
+        if (val < PSYN_MIN || val > PSYN_MAX) {
+            UARTSend((const uint8_t *)"\r\nERROR: value out of range (5..96)\r\n> ", 41, UARTDEV_USER);
+            return;
+        }
+
+        /* Valid - update PWM using YOUR working function */
+        set_pwm_percent((uint32_t)val);
+
+        char ack[32];
+        int n = snprintf(ack, sizeof(ack), "\r\nOK: duty set to %ld%%\r\n> ", val);
+        if (n > 0) UARTSend((const uint8_t *)ack, (uint32_t)n, UARTDEV_USER);
+    } else {
+        UARTSend((const uint8_t *)"\r\nERROR: unknown command. Use: PSYN n\r\n> ", 43, UARTDEV_USER);
+    }
+}
+
+
+/* PWM update - EXACTLY as in your working pwm.c (NO disable/enable!) */
+static void set_pwm_percent(uint32_t percent)
+{
+    if (percent > 100) percent = 100;
+    uint32_t pulse = (uint32_t)(((uint64_t)g_pwmPeriod * percent) / 100U);
+    if (pulse >= g_pwmPeriod) pulse = g_pwmPeriod - 1;
+    if (pulse == 0) pulse = 1;
+
+    /* ONLY set pulse width - no disable/enable */
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_2, pulse);
+    g_pwmPulse = pulse;
+}
+
+
+/* PWM setup - EXACTLY as in your working pwm.c */
+static void setup_pwm_pf2(void)
+{
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_PWM0)) { }
+    while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOF)) { }
+
+    GPIOPinConfigure(GPIO_PF2_M0PWM2);
+    GPIOPinTypePWM(GPIO_PORTF_BASE, GPIO_PIN_2);
+
+    PWMClockSet(PWM0_BASE, PWM_SYSCLK_DIV_1);
+
+    uint32_t pwmClock = g_ui32SysClock;
+    uint32_t period = (pwmClock + (TARGET_PWM_FREQ_HZ / 2U)) / TARGET_PWM_FREQ_HZ;
+    if (period == 0) period = 1;
+    if (period > 0xFFFF) period = 0xFFFF;
+
+    g_pwmPeriod = period;
+
+    uint32_t init_pulse = (uint32_t)(((uint64_t)period * TARGET_DUTY_PERCENT_INIT) / 100U);
+    if (init_pulse >= period) init_pulse = period - 1;
+    if (init_pulse == 0) init_pulse = 1;
+    g_pwmPulse = init_pulse;
+
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_1, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_1, period);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_2, init_pulse);
+    PWMOutputState(PWM0_BASE, PWM_OUT_2_BIT, true);
+    PWMGenEnable(PWM0_BASE, PWM_GEN_1);
+}
+
+
+static void setup_system_clock(void)
+{
+    g_ui32SysClock = MAP_SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ |
+                                             SYSCTL_OSC_MAIN |
+                                             SYSCTL_USE_PLL |
+                                             SYSCTL_CFG_VCO_480), 120000000);
+}
+
+
+static void setup_uarts(void)
+{
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_UART3);
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOJ);
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOQ);
+    MAP_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+
+    GPIOPinConfigure(GPIO_PA0_U0RX);
+    GPIOPinConfigure(GPIO_PA1_U0TX);
+    MAP_GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+
+    GPIOPinConfigure(GPIO_PJ0_U3RX);
+    GPIOPinConfigure(GPIO_PJ1_U3TX);
+    MAP_GPIOPinTypeUART(GPIO_PORTJ_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+
+    /* PF4 LED for RX activity */
+    ROM_GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_4);
+    ROM_GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, 0);
+
+    /* PQ1 DTR detection */
+    GPIOPadConfigSet(GPIO_PORTQ_BASE, GPIO_PIN_1, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
+    ROM_GPIOPinTypeGPIOInput(GPIO_PORTQ_BASE, GPIO_PIN_1);
+
+    ROM_UARTConfigSetExpClk(UART0_BASE, g_ui32SysClock, 9600,
+                            (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
+    ROM_UARTConfigSetExpClk(UART3_BASE, g_ui32SysClock, 115200,
+                            (UART_CONFIG_WLEN_8 | UART_CONFIG_STOP_ONE | UART_CONFIG_PAR_NONE));
+
+    MAP_IntMasterEnable();
+    ROM_IntEnable(INT_UART0);
+    ROM_UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
+    ROM_IntEnable(INT_UART3);
+    ROM_UARTIntEnable(UART3_BASE, UART_INT_RX | UART_INT_RT);
+}
+
+
+int main(void)
+{
+
+    unsigned int currCopyCharIdx = 0;
+    unsigned char currCopyChar = 0x00;
+
+    setup_system_clock();
+
+    ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPION);
+    ROM_GPIOPinTypeGPIOOutput(GPIO_PORTN_BASE, GPIO_PIN_0);
+
+    setup_pwm_pf2();
+    setup_uarts();
+
+    for (;;) {
+
+        /* Wait for DTR session */
+        UARTSend((const uint8_t *)"NO SESSION ACTIVE\r\n", 20, UARTDEV_ICDI);
+
+        while (ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
+            SysCtlDelay(g_ui32SysClock / (1000 * 100));
+        }
+
+        UARTSend((const uint8_t *)"SESSION WAS INITIATED\r\n", 24, UARTDEV_ICDI);
+        SysCtlDelay(g_ui32SysClock / (1000 * 12));
+
+        UARTSend((const uint8_t *)"\r\nPWM Ready. Enter command: PSYN n  (n = 5..96)\r\n> ", 52, UARTDEV_USER);
+
+        user_rx_len = 0;
+        user_cmd_ready = false;
+
+        /* Session active */
+        while (!ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
+
+            if (user_cmd_ready) {
+
+                ROM_IntDisable(INT_UART3);
+
+                char cmd_local[UART_RX_BUF_SIZE];
+                uint32_t len = user_rx_len;
+
+                if (len >= UART_RX_BUF_SIZE) len = UART_RX_BUF_SIZE - 1;
+
+                uint8_t hexShowBuf[13] = "CHAR: 0x--\r\n";
+
+                if (len > 0) {
+
+                    UARTSend((const uint8_t *)"cmd_local BEFORE memcpy: ", 25, UARTDEV_ICDI);
+                    UARTSend((const uint8_t *)cmd_local, len, UARTDEV_ICDI);
+                    UARTSend((const uint8_t *)"\r\n", 2, UARTDEV_ICDI);
+
+                    for (currCopyCharIdx = 0; currCopyCharIdx < len; currCopyCharIdx++) {
+
+                        currCopyChar = user_rx_buf[currCopyCharIdx];
+
+                        sprintf((char *)(hexShowBuf + 8), "%02X", currCopyChar);
+                        UARTSend((const uint8_t *)hexShowBuf, 13, UARTDEV_ICDI);
+
+                        cmd_local[currCopyCharIdx] = currCopyChar;
+                    }
+
+                    //memcpy(cmd_local, (const void *)user_rx_buf, len); -- MEMCPY CORRUPTS!!!
+                    cmd_local[len] = '\0';
+
+                    UARTSend((const uint8_t *)"PARSED THIS COMMAND: ", 21, UARTDEV_ICDI);
+                    UARTSend((const uint8_t *)cmd_local, len, UARTDEV_ICDI);
+                    UARTSend((const uint8_t *)"\r\n", 2, UARTDEV_ICDI);
+
+                } else {
+
+                    cmd_local[0] = '\0';
+
+                }
+
+                user_rx_len = 0;
+                user_cmd_ready = false;
+
+                ROM_IntEnable(INT_UART3);
+
+                if (cmd_local[0] != '\0') {
+                    process_user_line(cmd_local);
+                }
+
+            }
+
+            ROM_SysCtlSleep();
+
+        }
+
+        UARTSend((const uint8_t *)"SESSION WAS DISCONNECTED\r\n", 27, UARTDEV_ICDI);
+
+    }
+
+    return 0;
+}
+

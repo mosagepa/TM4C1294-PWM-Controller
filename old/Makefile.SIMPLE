@@ -1,0 +1,134 @@
+#******************************************************************************
+#
+# Makefile - Rules for building 'main.c'
+#
+# For the Texas Instruments' TM4C1294XL-based main & TACH "gen & fake"
+# subsystem within the 'IBM PS FAN CONTROL' design.
+#
+# (v5, with both main duty default gen @ 21.5KHz, 30% duty,
+# and UART 'PSYN n' command feature)
+#
+# (c) Nov 2025 <MSC> - Purposeful Designs, Inc.
+#
+#******************************************************************************
+
+#
+# Defines the part type that this project uses.
+#
+#PART=TM4C123GH6PM
+PART=TM4C1294NCPDT
+
+#
+# The base directory for TivaWare.
+#
+TIVAWARE_ROOT=/home/mosagepa/decomp/STM32/TI_BOARDS/TIVAWARE
+
+#
+# Where to find source files that do not live in this directory.
+#
+VPATH=${TIVAWARE_ROOT}/utils
+
+#
+# Where to find header files that do not live in the source directory.
+#
+IPATH=${TIVAWARE_ROOT} .
+
+
+COMPILER=gcc
+DRIVERS=${PWD}/drivers
+
+
+#
+# Path to prebuild usblib and driverlib archives
+# MOSA FIX: Add usb + driverlib inside a linker group so cross-references
+# are properly resolved (undefined references --e.g., to USBEndpointDataPut--
+# will be caused by circular dependencies between the USB library and driverlib.
+# The linker will only pull objects from an archive if they resolve
+# currently-unresolved symbols; when two archives reference each other we
+# must give the linker both archives inside a group so it can iterate and
+# resolve the circular references...
+# This doesn't intend to change the global 'makedefs'. It only defines
+# LDFLAGSgcc_main for the main target; 'makedefs' will pick it up at the
+# linking stage:
+USBLIB_ARCHIVE_DIR := ${TIVAWARE_ROOT}/usblib/${COMPILER}
+DRIVERLIB_ARCHIVE_DIR := ${TIVAWARE_ROOT}/driverlib/${COMPILER}
+
+USBLIB_ARCHIVE=${USBLIB_ARCHIVE_DIR}/libusb.a
+DRIVERLIB_ARCHIVE=${DRIVERLIB_ARCHIVE_DIR}/libdriver.a
+
+# Per-target linker flags used by the existing makedefs link rule.
+# This will be substituted into the link command for main.axf because the
+# generated rule uses ${LDFLAGSgcc_${notdir ${@:.axf=}}}.
+LDFLAGSgcc_main = --start-group ${DRIVERLIB_ARCHIVE} ${USBLIB_ARCHIVE} --end-group
+
+# Ensure syscalls (newlib stubs) are compiled and linked
+# (Place syscalls.c in your project directory with the minimal stubs.)
+# MOSA FIX: it happens that the 'syscalls' rule must create its dir itself.
+# The rule has an order-only prerequisite (| ${COMPILER}) in place, but in
+# the way this Makefile is now structured, that didn't happen before the
+# compiler ran (this also helps in the event of having "too much clean"
+# run by the 'make clean' command...
+${COMPILER}/syscalls.o: syscalls.c
+	@mkdir -p ${COMPILER}
+	@${CC} ${CFLAGS} -D${COMPILER} -c syscalls.c -o ${COMPILER}/syscalls.o
+
+#
+# Include (MOSA LINK: just AFTER previous declarations, so as NOT to
+# override them !!!) the common make definitions:
+#
+include ${TIVAWARE_ROOT}/makedefs
+
+#
+# The default rule, which causes the example to be built.
+#
+all: ${COMPILER}
+all: ${COMPILER}/main.axf
+
+# FLASH USING LM4FTOOLS
+flash:
+	$(TIVAWARE_ROOT)/lm4tools/lm4flash/lm4flash ${COMPILER}/main.bin
+
+
+#
+# The rule to clean out all the build products.
+#
+clean:
+	@rm -rf ${COMPILER} ${wildcard *~}
+
+#
+# The rule to create the target directory.
+#
+${COMPILER}:
+	@mkdir -p ${COMPILER}
+
+#
+# Rules for building the 'main.c' subproject.
+#
+# MOSA FIX: We could add the (e.g. libusb) archive/s into LDLIBS so it is included
+# during the existing link rule (which was only referring to /main.o as the only
+# (explicit) object dependency. This would be done adding near the top of the
+# Makefile an 'LDLIBS += ${USBLIB_ARCHIVE}' declaration. But we prefer the explicit
+# dependency being shown here to guarantee the archive is included.
+# Also, archive group must be declared after object list and before libm/libc/libgcc:
+${COMPILER}/main.axf: ${COMPILER}/main.o ${COMPILER}/startup_${COMPILER}.o ${COMPILER}/uartstdio.o ${DRIVERS}/pinout.o ${COMPILER}/syscalls.o ${TIVAWARE_ROOT}/driverlib/${COMPILER}/libdriver.a ${USBLIB_ARCHIVE} TM4C1294XL.ld
+	@echo "  Linking, LD    $@"
+	${LD} -T TM4C1294XL.ld --entry ${ENTRY_main} ${LDFLAGS} -o ${@} $(filter %.o, $^) ${LDFLAGSgcc_main} $(filter %.a, $^) '${LIBM}' '${LIBC}' '${LIBGCC}'
+	@${OBJCOPY} -O binary ${@} ${@:.axf=.bin}
+
+#${COMPILER}/main.axf: ${COMPILER}/startup_${COMPILER}.o
+#${COMPILER}/main.axf: ${COMPILER}/uartstdio.o
+#${COMPILER}/main.axf: ${TIVAWARE_ROOT}/driverlib/${COMPILER}/driverlib.a
+#${COMPILER}/main.axf: ${USBLIB_ARCHIVE}/gcc/libusb.a
+#${COMPILER}/main.axf: TM4C1294XL.ld
+
+SCATTERgcc_main=TM4C1294XL.ld
+ENTRY_main=ResetISR
+CFLAGSgcc=-DTARGET_IS_TM4C129_RA0
+
+#
+# Include the automatically generated dependency files.
+#
+ifneq (${MAKECMDGOALS},clean)
+-include ${wildcard ${COMPILER}/*.d} __dummy__
+endif
+

@@ -1,0 +1,334 @@
+
+
+ADDITIONAL INFORMATION AND HINTS AND CAVEATS
+(FOR NEWLIB AND OTHER C-STUFF INTEGRATION) :
+============================================
+
+Stub for the case in which #include <ctype.h>
+
+Basically, the stub here is an alternative to direct implementation
+of helpers for bypassing the default, system-wide ctype (see header
+'ctype_helpers.h' in main code folder):
+
+  - Use the local helper (my_isspace/my_toupper) if you want the
+    simplest, smallest, most robust embedded solution. It avoids
+    changing global library behavior and keeps binary size minimal.
+
+  - Use the stub only if you prefer to keep existing code unchanged
+    (i.e., many files use <ctype.h> heavily), or basically whenever
+    you want to keep the libc-style declaration API everywhere.
+    But take notice that the stub may pull in other dependencies
+    if macros expand to table lookups; also be mindful of symbol name
+    exactness for your C library. Stub costs extra ROM/ RAM for such
+    tables but it is still fairly small if you only implement ASCII.
+
+
+How to compile against this stub if we wish:
+
+- Example for implementating a given symbol, say 'ctype_ptr':
+
+    Exact stub you need
+
+    The linker error told you the symbol name: ctype_ptr
+    That is the symbol you must provide (some CRTs use different names:
+      __ctype_b_loc, __ctype_b). If future errors show a different name,
+      adapt the stub name accordingly.
+    Provide the symbol with the type expected by your libc
+    (commonly a pointer to an array of 256 unsigned short or char).
+    The minimal ASCII-only table is sufficient for embedded use.
+
+    Note:
+
+    - This stub approach will satisfy linkers that merely expect the symbol;
+      it’s not a full locale implementation. It will work for ASCII-only input
+      (which is the typical case in embedded devices).
+
+
+Summary of options - Files to add / change
+
+- ctype_helpers.h (inline helpers) — include in files that use isspace/toupper.
+- ctype_stub.c — small C file providing ctype_ptr and filling ASCII table.
+
+
+Manual integration details (just in case) - single link commands:
+
+  Compile application objects:
+
+    arm-none-eabi-gcc -c -mcpu=cortex-m4 -mthumb -O0 -g -std=gnu11  \
+      -I/path/to/TivaWare inc1.c -o inc1.o ...
+
+    With stub:
+
+    arm-none-eabi-gcc ... -c ctype_stub.c -o ctype_stub.o
+
+    arm-none-eabi-ld  -T TM4C1294XL.ld -o app_with_stub.axf  \
+      obj1.o obj2.o ctype_stub.o ... <libdriver> <libc> <libgcc>
+
+    With helpers option, omit 'ctype_stub.o'.
+
+
+  Variant/ s to add to existing Makefile:
+
+    # Add to your existing Makefile
+    VARIANT_HELPERS_OBJS = main.o other.o
+       # built with source using my_isspace/my_toupper
+
+    VARIANT_STUB_OBJS    = main.o other.o ctype_stub.o
+       # main.c still uses standard ctype.h
+
+    helpers: $(VARIANT_HELPERS_OBJS)
+        $(LD) -T TM4C1294XL.ld $(LFLAGS)  \
+           -o app_helpers.axf $(VARIANT_HELPERS_OBJS) $(LIBS)
+
+    stub: $(VARIANT_STUB_OBJS)
+        $(LD) -T TM4C1294XL.ld $(LFLAGS)  \
+           -o app_stub.axf $(VARIANT_STUB_OBJS) $(LIBS)
+
+
+Checks and debugging hints/ caveats:
+====================================
+
+- Commands and scripts to compare memory/footprint after linking.
+  Run these for each built axf (or *.elf) file:
+
+    Summary sizes (flash/text, data, bss):
+ 
+      arm-none-eabi-size app_helpers.axf
+      arm-none-eabi-size app_stub.axf
+
+    Detailed section sizes and addresses:
+
+      arm-none-eabi-objdump -h app_helpers.axf
+      arm-none-eabi-objdump -h app_stub.axf
+
+    Symbol table (find ctype symbol present and sizes):
+
+      arm-none-eabi-nm --defined-only app_stub.axf |  \
+        | egrep '_ctype|__ctype|_ctype_ptr|_heap|_stack'
+
+      arm-none-eabi-nm --defined-only app_helpers.axf |  \
+        | egrep '_ctype|__ctype|_heap|_stack'
+
+    Map file (add -Wl,-Map,app_helpers.map when linking) then inspect:
+
+       grep -n '_heap_start|_heap_end|ctype_ptr' app_stub.map
+
+    Compare .rodata/.data contributions:
+
+       arm-none-eabi-objdump -s -j .rodata app_stub.axf |  \
+         | head arm-none-eabi-objdump -s -j .rodata app_helpers.axf | head
+
+   Simpler automated diff (example):
+
+     arm-none-eabi-size app_helpers.axf > size_helpers.txt
+
+     arm-none-eabi-size app_stub.axf > size_stub.txt
+
+     diff -u size_helpers.txt size_stub.txt
+
+   Interpretation:
+
+     Expect app_stub.axf to have a larger .rodata or .data size
+     because of the ctype table.
+    
+     The difference in .text may be small (if helpers are inlined
+     vs table lookups).
+
+     Use the map to see exactly which address the table occupies
+     and how many bytes it costs.
+
+     Verifying the stub resolves the undefined symbol
+     After you link the variant with ctype_stub.c, verify the symbol
+     is defined:
+
+       arm-none-eabi-nm --defined-only app_stub.axf | grep ctype_ptr
+
+     You should see something like:
+
+       00012345 D ctype_ptr
+
+     If it is present you solved the undefined reference.
+
+     If the earlier linker error referenced a different symbol,
+     search for undefined symbols:
+
+       arm-none-eabi-nm -u app_helpers.axf # lists undefined symbols
+         # in the binary or earlier, before linking:
+         # run the failing link step and read the error message.
+
+
+Checking runtime memory usage (heap/stack) on the uC :
+------------------------------------------------------
+
+A.
+    Print linker-provided symbols at runtime (UART) Add to your main:
+
+      extern char _end_bss, _heap_start, _heap_end, _stack_top;
+      void print_memory_layout(void) {
+        printf("_end_bss=%p\n", (void*)&_end_bss);
+        printf("_heap_start=%p\n", (void*)&_heap_start);
+        printf("_heap_end=%p\n", (void*)&_heap_end);
+        printf("_stack_top=%p\n", (void*)&_stack_top);
+        /* print current SP */
+        register void *sp asm("sp");
+        printf("SP=%p\n", sp);
+      }
+ 
+    Call print_memory_layout early (after UART init) and observe addresses.
+
+ 
+B. Stack usage (static fill technique)
+
+     In reset/startup, before calling main, fill the entire RAM area
+     reserved to stack with a pattern (0xAA or 0x55) but be careful:
+     only do this for debug builds and only fill the stack area
+     (do not clobber global/bss etc).
+
+     Later, in your app, scan from the top downward to find
+     first byte that is not the pattern — that marks the high-water
+     mark of stack usage.
+
+     Example (in reset or at early stage; be careful with memory ranges):
+
+       /* Danger: must run before stack used, so do in very early startup
+          or use alternate pointer */
+       void fill_stack_pattern(uint32_t pattern) {
+         uint8_t *p = (uint8_t*)&_stack_bottom; // bottom of stack (low addr)
+         uint8_t *top = (uint8_t*)&_stack_top;  // top of stack (high addr)
+         for (; p < top; ++p) *p = (uint8_t)pattern;
+       }
+
+     Then later:
+
+       size_t used_stack_bytes(void) {
+         uint8_t *p = (uint8_t*)&_stack_bottom;
+         uint8_t *top = (uint8_t*)&_stack_top;
+         while (p < top && *p == (uint8_t)0xAA) ++p;
+         return top - p;
+       }
+
+      (Adjust addresses depending on how your linker defines stack symbols.)
+
+
+C. Heap usage at runtime
+
+     You can print the current heap pointer maintained by your
+     _sbrk implementation (if you expose it).
+
+     For example add function:
+
+       extern char _heap_start, _heap_end;
+       extern char *heap_ptr; // make heap_ptr non-static or provide getter
+       void print_heap_info(void) {
+         printf("_heap_start=%p _heap_end=%p heap_used=%u\n",  \
+           &_heap_start, &_heap_end, (unsigned)((uintptr_t)heap_ptr -
+             - (uintptr_t)&_heap_start));
+       } 
+
+
+    Run test_malloc and print heap_used after each allocation to confirm behavior.
+
+
+D. Use debugger to read RAM while running or halted
+
+     With arm-none-eabi-gdb (or IDE) connect to the device via OpenOCD
+     or the vendor debugger and read memory:
+
+       (gdb) target remote :3333
+       (gdb) x/64bx 0x20000000 # dump bytes at SRAM start (gdb) info reg sp
+
+     You can also use GDB to inspect static symbols (_heap_start etc).
+
+     Using your LA1010 logic analyzer & scope to correlate events :
+
+       - Wire LA channel to the instrument GPIO you toggle before/after
+         malloc/printf.
+
+       - Use UART decoder plugin to confirm bytes on TX and
+         align them with GPIO pulses.    Example:
+
+           Toggle PN0 for "before printf"
+           Toggle PN0 again for "after printf"
+           If "before" appears but no UART burst follows, the UART
+             hasn't been configured or is blocked.
+           If UART shows garbled bytes vs clean:
+             check SysCtlClockGet log around UART config.
+
+
+Example test flow to compare variants :
+=======================================
+
+- Build helpers variant and flash.
+
+- Open UART and capture startup prints + heap/stack addresses
+  and run test_malloc.
+
+- Collect size output: arm-none-eabi-size and map for that binary.
+
+. Repeat steps 1–3 for stub variant (ctype_stub).
+
+- Compare size outputs (diff size files and map addresses).
+
+- Check runtime heap/stack high-water marks. Compare outcomes.
+
+
+Tools & commands cheat-sheet :
+==============================
+
+- Build:
+
+    make clean && make helpers # or stub
+
+- Check binary sizes:
+
+    arm-none-eabi-size app_helpers.axf
+    arm-none-eabi-size app_stub.axf
+
+- Get section addresses:
+
+    arm-none-eabi-objdump -h app_helpers.axf
+
+- Symbol table (search for stub symbol):
+
+   arm-none-eabi-nm --defined-only app_stub.axf | grep ctype_ptr
+
+- Read runtime layout (once flashed and UART available):
+  call a function to print symbols, or use gdb:
+
+    arm-none-eabi-gdb app_helpers.axf
+    (gdb) target remote :3333
+    (gdb) p/x &_heap_start (gdb) p/x &_heap_end
+
+-  Dump memory with OpenOCD:
+
+     openocd -f interface/xxx.cfg -f target/xxx.cfg
+     telnet localhost 4444 dump_image ramdump.bin 0x20000000 0x8000
+
+- Notes & gotchas
+
+  - If you provide a stub symbol that differs in signature from what
+    newlib expects you may get incorrect behavior.
+    Start with a minimal unsigned short array pointer as shown
+    and verify linking.
+
+  - Calling standard <ctype.h> after adding the stub should work
+    without further change.
+
+  - Always test both variants on the real device (not just size) -
+    sometimes inlining vs table lookup affects stack usage.
+
+  - Keep debug instrumentation (stack fill, GPIO toggles) in debug builds only.
+
+
+If you want, I can:
+
+  - Produce two ready-to-drop build targets (helpers and stub)
+    in your existing Makefile and give the exact diff to add.
+
+  - Produce small source files to print heap/stack info
+    and a small script to automate both builds, flash,
+    and output a comparison summary (size diff + sample runtime prints).
+
+  - Produce a pandoc-ready Markdown export or an actual ZIP/patch
+    snippet you can apply.
+
