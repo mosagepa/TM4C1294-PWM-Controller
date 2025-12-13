@@ -1,0 +1,13 @@
+# udev rules for TI/Luminary Micro ICDI (lm4flash)
+# Device shown as: 1cbe:00fd "Luminary Micro Inc. In-Circuit Debug Interface"
+#
+# Install:
+#   sudo cp tools/udev/49-lm4flash-icdi.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#   (unplug/replug the LaunchPad)
+#
+# This grants the active desktop user access (TAG+uaccess) and also sets group access.
+# If your distro doesn't use uaccess, keep GROUP/MODE and add yourself to that group.
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="00fd", MODE:="0660", GROUP:="plugdev", TAG+="uaccess"
