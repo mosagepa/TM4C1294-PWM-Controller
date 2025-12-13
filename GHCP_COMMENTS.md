@@ -219,6 +219,76 @@
 
 *This document serves as a learning resource for embedded systems developers and showcases effective AI-human collaboration in technical problem-solving.*
 
+---
+
+## Comment #007 - Autonomous Build → Flash → UART Capture Flow
+**Date**: December 13, 2025  
+**Context**: Automating firmware iteration loop (build, flash, UART interaction, log capture)  
+**Type**: Workflow Automation / Tooling
+
+### What was added
+
+This repo now supports a single-command “auto” loop:
+
+- Build firmware
+- Flash to TM4C1294XL via `lm4flash`
+- Capture UART0 (ICDI @ 9600) and UART3 (USER @ 115200)
+- Optionally send a UART3 command (e.g. `PSYN 44\r`)
+- Save logs to `./logs/`
+
+### How it’s wired (inner implementation)
+
+1. **Makefile orchestration** (`Makefile`)
+    - `flash` uses `$(SUDO) $(FLASHER) $(PROJECT_NAME).bin` where `SUDO ?= sudo`.
+    - `auto: flash` runs the UART session script and then prints a final success banner.
+    - Defaults:
+      - `UART0_DEV ?= /dev/ttyACM0`, `UART0_BAUD ?= 9600`
+      - `UART3_DEV ?= /dev/ttyUSB1`, `UART3_BAUD ?= 115200`
+
+2. **UART capture + command send** (`tools/uart_session.py`)
+    - Uses `pyserial` and spawns one reader thread per UART.
+    - Writes timestamped logs under `./logs/`.
+    - Optional UART3 send: `--send-uart3 'PSYN 44\r'` (supports `\r` / `\n` escapes).
+    - Prints a final `RESULT: OK` or `RESULT: FAIL` and returns a non-zero exit code on failure.
+
+3. **Sudo-less flashing** (udev)
+    - The TM4C1294XL ICDI enumerates as `1cbe:00fd` (Luminary Micro ICDI).
+    - A udev rule is provided at `tools/udev/49-lm4flash-icdi.rules`.
+    - Once installed, you can run `lm4flash` without sudo and use `make ... SUDO=`.
+
+### Use guide
+
+**One-time: enable sudo-less `lm4flash`**
+
+- Follow: `tools/SUDOLESS_FLASHING.md`
+
+**Daily workflow**
+
+```bash
+# Build + flash + UART capture + send a test command
+make auto SUDO= DURATION=8 CMD='PSYN 44\r'
+
+# Capture only (runs until Ctrl+C)
+make capture
+
+# Send only
+make send-uart3 CMD='PSYN 44\r'
+```
+
+### Success criteria (what “completed” means)
+
+The auto flow is considered successful when:
+
+- `make auto ...` exits with code 0
+- The UART script prints `RESULT: OK`
+- Make prints `AUTO FLOW: SUCCESS (build+flash+uart)`
+
+Logs are saved under `./logs/` with timestamped filenames.
+
+### Is GHCP_COMMENTS “pinned”?
+
+Yes: `README.md` links `GHCP_COMMENTS.md` near the top under “AI Collaboration Insights”, and `docs/README.md` also links it in the documentation index.
+
 **Repository**: [TM4C1294-PWM-Controller](https://github.com/mosagepa/TM4C1294-PWM-Controller)  
 **AI Assistant**: GitHub Copilot (Claude Sonnet 4)  
 **Collaboration Model**: Technical mentoring with hands-on implementation
