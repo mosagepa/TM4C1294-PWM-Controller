@@ -54,6 +54,16 @@ static inline void diag_print_variable_default(const char *name, const void *add
     diag_print_variable(name, addr, size, DIAG_PREVIEW_LIMIT);
 }
 
+/* Standard library replacements (same names for transparent replacement) */
+int sprintf(char *str, const char *format, ...);
+int snprintf(char *str, size_t size, const char *format, ...);
+int printf(const char *format, ...);
+
+/* Memory protection diagnostics */
+void diag_check_memory_integrity(const char *context);
+void diag_check_stack_usage(const char *function_name);
+int diag_stack_bytes_used(void);
+int diag_heap_bytes_used(void);
 
 #endif /* DIAG_UART_H */
 

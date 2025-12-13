@@ -125,24 +125,118 @@ int diag_snprintf_heap_send(const char *fmt, ...)
 }    
 /* --- end formatting helpers --- */
 
+/* Simple sprintf implementation without vsnprintf (avoids runtime stall) */
+static int diag_simple_sprintf(char *str, int max_size, const char *format, va_list ap)
+{
+    char *dest = str;
+    const char *src = format;
+    int written = 0;
+    
+    while (*src && written < max_size - 1) {
+        if (*src != '%') {
+            *dest++ = *src++;
+            written++;
+        } else {
+            src++; /* skip '%' */
+            if (*src == 's') {
+                /* %s - string */
+                char *s = va_arg(ap, char*);
+                if (s) {
+                    while (*s && written < max_size - 1) {
+                        *dest++ = *s++;
+                        written++;
+                    }
+                }
+                src++;
+            } else if (*src == 'd') {
+                /* %d - integer */
+                int val = va_arg(ap, int);
+                char num_buf[12];
+                int num_len = 0;
+                
+                /* Handle negative numbers */
+                if (val < 0) {
+                    if (written < max_size - 1) {
+                        *dest++ = '-';
+                        written++;
+                    }
+                    val = -val;
+                }
+                
+                /* Convert to string (reverse order) */
+                do {
+                    num_buf[num_len++] = '0' + (val % 10);
+                    val /= 10;
+                } while (val > 0 && num_len < 11);
+                
+                /* Copy digits in correct order */
+                for (int i = num_len - 1; i >= 0 && written < max_size - 1; i--) {
+                    *dest++ = num_buf[i];
+                    written++;
+                }
+                src++;
+            } else if (*src == 'p') {
+                /* %p - pointer */
+                void *ptr = va_arg(ap, void*);
+                uintptr_t addr = (uintptr_t)ptr;
+                char hex_buf[20];
+                int hex_len = 0;
+                
+                /* Add "0x" prefix */
+                if (written < max_size - 2) {
+                    *dest++ = '0';
+                    *dest++ = 'x';
+                    written += 2;
+                }
+                
+                /* Convert to hex (reverse order) */
+                do {
+                    int digit = addr & 0xF;
+                    hex_buf[hex_len++] = (digit < 10) ? ('0' + digit) : ('A' + digit - 10);
+                    addr >>= 4;
+                } while (addr > 0 && hex_len < 16);
+                
+                /* Copy hex digits in correct order */
+                for (int i = hex_len - 1; i >= 0 && written < max_size - 1; i--) {
+                    *dest++ = hex_buf[i];
+                    written++;
+                }
+                src++;
+            } else if (*src == '%') {
+                /* %% - literal % */
+                if (written < max_size - 1) {
+                    *dest++ = '%';
+                    written++;
+                }
+                src++;
+            } else {
+                /* Unknown format - just copy the % and char */
+                if (written < max_size - 1) {
+                    *dest++ = '%';
+                    written++;
+                }
+                if (*src && written < max_size - 1) {
+                    *dest++ = *src++;
+                    written++;
+                }
+            }
+        }
+    }
+    
+    *dest = '\0';
+    return written;
+}
+
 /* Standard library replacements using our proven UART mechanics */
 
-/* sprintf replacement: format into provided buffer using our heap-based formatter */
+/* Simple sprintf replacement: basic formatting without vsnprintf */
 int sprintf(char *str, const char *format, ...)
 {
     va_list ap;
     va_start(ap, format);
-    char *heap_buf = diag_vasprintf_heap(format, ap);
+    int result = diag_simple_sprintf(str, 320, format, ap);
     va_end(ap);
-    
-    if (!heap_buf) return -1;
-    
-    /* Copy from heap buffer to user buffer */
-    int len = (int)strlen(heap_buf);
-    strcpy(str, heap_buf);
-    free(heap_buf);
-    
-    return len;
+    return result;
 }
 
 /* snprintf replacement: format into provided buffer with size limit */
@@ -152,44 +246,150 @@ int snprintf(char *str, size_t size, const char *format, ...)
     
     va_list ap;
     va_start(ap, format);
-    char *heap_buf = diag_vasprintf_heap(format, ap);
+    int result = diag_simple_sprintf(str, (int)size, format, ap);
     va_end(ap);
-    
-    if (!heap_buf) return -1;
-    
-    /* Copy with size limit */
-    int heap_len = (int)strlen(heap_buf);
-    int copy_len = (heap_len < (int)size - 1) ? heap_len : (int)size - 1;
-    
-    if (copy_len > 0) {
-        memcpy(str, heap_buf, copy_len);
-    }
-    str[copy_len] = '\0';
-    
-    free(heap_buf);
-    return heap_len; /* return what would have been written */
+    return result;
 }
 
 /* printf replacement: format and send directly to UART */
 int printf(const char *format, ...)
 {
+    char buffer[320];
     va_list ap;
     va_start(ap, format);
-    char *heap_buf = diag_vasprintf_heap(format, ap);
+    int len = diag_simple_sprintf(buffer, sizeof(buffer), format, ap);
     va_end(ap);
     
-    if (!heap_buf) return -1;
-    
-    /* Send directly to UART0 (ICDI) */
-    int len = (int)strlen(heap_buf);
-    for (int i = 0; i < len; i++) {
-        ROM_UARTCharPut(UART0_BASE, heap_buf[i]);
+    if (len > 0) {
+        UARTSend((uint8_t*)buffer, len, UARTDEV_ICDI);
     }
-    
-    free(heap_buf);
     return len;
 }
 
+
+/* ------------------ Memory Protection Diagnostics ------------------ */
+
+/* External symbols from linker script */
+extern char _heap_start, _heap_end, _stack_bottom, _stack_top;
+extern char _end_bss;
+
+/* Get current stack pointer */
+static uint32_t get_stack_pointer(void)
+{
+    uint32_t sp;
+    __asm volatile ("mov %0, sp" : "=r" (sp));
+    return sp;
+}
+
+/* Check for memory region overlaps and corruption */
+void diag_check_memory_integrity(const char *context)
+{
+    uint32_t heap_start = (uint32_t)&_heap_start;
+    uint32_t heap_end = (uint32_t)&_heap_end;
+    uint32_t stack_bottom = (uint32_t)&_stack_bottom;
+    uint32_t stack_top = (uint32_t)&_stack_top;
+    uint32_t current_sp = get_stack_pointer();
+    uint32_t bss_end = (uint32_t)&_end_bss;
+    
+    diag_puts("=== MEMORY INTEGRITY CHECK (");
+    diag_puts(context);
+    diag_puts(") ===\r\n");
+    diag_puts("BSS End:       0x"); diag_put_hex32(bss_end); diag_puts("\r\n");
+    diag_puts("Heap Start:    0x"); diag_put_hex32(heap_start); diag_puts("\r\n");
+    diag_puts("Heap End:      0x"); diag_put_hex32(heap_end); diag_puts("\r\n");
+    diag_puts("Stack Bottom:  0x"); diag_put_hex32(stack_bottom); diag_puts("\r\n");
+    diag_puts("Stack Top:     0x"); diag_put_hex32(stack_top); diag_puts("\r\n");
+    diag_puts("Current SP:    0x"); diag_put_hex32(current_sp); diag_puts("\r\n");
+    
+    /* Check for overlaps */
+    int overlap_detected = 0;
+    
+    /* Check heap doesn't overlap stack */
+    if (heap_end > stack_bottom) {
+        diag_puts("*** CRITICAL: HEAP-STACK OVERLAP! ***\r\n");
+        overlap_detected = 1;
+    }
+    
+    /* Check stack hasn't grown into heap */
+    if (current_sp < heap_end) {
+        diag_puts("*** CRITICAL: STACK-HEAP COLLISION! ***\r\n");
+        overlap_detected = 1;
+    }
+    
+    /* Check stack overflow */
+    if (current_sp < stack_bottom) {
+        diag_puts("*** CRITICAL: STACK OVERFLOW! ***\r\n");
+        overlap_detected = 1;
+    }
+    
+    if (overlap_detected) {
+        diag_puts("*** SYSTEM HALTED - MEMORY CORRUPTION DETECTED ***\r\n");
+        /* Halt system - in real application you might want controlled shutdown */
+        while (1) {
+            /* Flash LED or other indication */
+            ROM_SysCtlDelay(ROM_SysCtlClockGet() / 10); /* 100ms delay */
+        }
+    } else {
+        diag_puts("Memory integrity: OK\r\n");
+    }
+    
+    diag_puts("Stack usage: "); diag_put_u32_dec((uint32_t)diag_stack_bytes_used()); diag_puts(" bytes\r\n");
+    diag_puts("Heap usage:  "); diag_put_u32_dec((uint32_t)diag_heap_bytes_used()); diag_puts(" bytes\r\n");
+    diag_puts("================================\r\n");
+}
+
+/* Check stack usage and warn if getting close to limit */
+void diag_check_stack_usage(const char *function_name)
+{
+    int stack_used = diag_stack_bytes_used();
+    int stack_total = (uint32_t)&_stack_top - (uint32_t)&_stack_bottom;
+    int stack_remaining = stack_total - stack_used;
+    
+    diag_puts("Stack check [");
+    diag_puts(function_name);
+    diag_puts("]: ");
+    diag_put_u32_dec((uint32_t)stack_used);
+    diag_puts("/");
+    diag_put_u32_dec((uint32_t)stack_total);
+    diag_puts(" bytes used (");
+    diag_put_u32_dec((uint32_t)stack_remaining);
+    diag_puts(" remaining)\r\n");
+    
+    /* Warn if stack usage > 75% */
+    if (stack_used > (stack_total * 3) / 4) {
+        diag_puts("*** WARNING: Stack usage > 75% in ");
+        diag_puts(function_name);
+        diag_puts(" ***\r\n");
+    }
+    
+    /* Critical if stack usage > 90% */
+    if (stack_used > (stack_total * 9) / 10) {
+        diag_puts("*** CRITICAL: Stack usage > 90% in ");
+        diag_puts(function_name);
+        diag_puts(" ***\r\n");
+        diag_check_memory_integrity(function_name);
+    }
+}
+
+/* Get current stack usage in bytes */
+int diag_stack_bytes_used(void)
+{
+    uint32_t current_sp = get_stack_pointer();
+    uint32_t stack_top = (uint32_t)&_stack_top;
+    return (int)(stack_top - current_sp);
+}
+
+/* Get current heap usage in bytes (simplified version) */
+int diag_heap_bytes_used(void)
+{
+    /* Simple estimation - would need malloc_simple.c integration for accuracy */
+    uint32_t heap_start = (uint32_t)&_heap_start;
+    /* Remove unused variable to fix warning */
+    
+    /* This is a placeholder - real implementation would track malloc'd bytes */
+    /* For now just show heap region size */
+    return 0; /* TODO: integrate with malloc tracking */
+}
 
 
 /* ------------------ Low-level output helpers ------------------ */

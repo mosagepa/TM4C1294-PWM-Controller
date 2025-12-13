@@ -393,9 +393,14 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
         diag_print_variable("dyn_str", (const void *)dyn, (size_t)(lit_len + 1), DIAG_PREVIEW_NOLIMIT);
         diag_puts("DEBUG: diag_print_variable completed\r\n");
         
+        /* Memory integrity check before stack-heavy operations */
+        diag_check_memory_integrity("pre-sprintf-test");
+        
         /* Test 5: Stack usage test - declare msgbuf array (WORKS!) */
         diag_puts("DEBUG: About to declare msgbuf[320]...\r\n");
+        diag_check_stack_usage("before-msgbuf-declaration");
         char msgbuf[320];
+        diag_check_stack_usage("after-msgbuf-declaration");
         diag_puts("DEBUG: msgbuf declared, testing our sprintf replacement...\r\n");
         
         /* Test 6: Use our custom sprintf replacement */
