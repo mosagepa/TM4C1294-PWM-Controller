@@ -2,7 +2,7 @@
 
 A comprehensive PWM control system for the Texas Instruments TM4C1294XL Tiva C ARM Cortex-M4 microcontroller, featuring custom memory management and UART-based command interface.
 
-> 📚 **Complete Technical Documentation**: For detailed development insights, comprehensive hardware specifications, platform details, and implementation guides, please visit our **[Technical Documentation Center](./docs/README.md)**. This includes extensive feature analysis, TM4C1294XL platform reference, and step-by-step development guides.
+> 📚 **Complete Technical Documentation**: For detailed development insights, comprehensive hardware specifications, platform details, implementation guides, and the full project evolution (ATTiny45 → ESP32-S2 → TM4C1294XL), please visit our **[Technical Documentation Center](./docs/README.md)**.
 
 > 🤖 **AI Collaboration Insights**: See [GHCP_COMMENTS.md](./GHCP_COMMENTS.md) for detailed AI-assisted development experiences, technical insights, and problem-solving approaches used in this project. This resource documents the embedded systems development journey and serves as a learning guide for similar projects.
 

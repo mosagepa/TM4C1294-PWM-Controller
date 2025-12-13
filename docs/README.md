@@ -10,6 +10,9 @@ This documentation provides comprehensive technical details about the TM4C1294-P
 
 ### Detailed Technical Documentation
 
+#### 🧭 [Project Evolution - From ATTiny45 → ESP32-S2 → TM4C1294XL](./Project-Evolution.md)
+End-to-end project history and migration rationale derived from the original development artifacts.
+
 #### 🚀 [Features - Comprehensive Technical Overview](./Features.md)
 Extensive analysis of all system features with implementation details:
 - **PWM Control System**: Hardware timer configuration, mathematical foundation, performance characteristics
