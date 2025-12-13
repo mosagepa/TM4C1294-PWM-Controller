@@ -2,7 +2,7 @@
 
 A comprehensive chronicle of the **IBM PS Fan Control project** development journey, documenting the evolution from early ATTiny45 prototypes through ESP32-S2 implementations to the current TM4C1294XL ARM Cortex-M4F solution.
 
-> **Timeline note**: The earlier draft of this page mistakenly labeled phases as 2024. Per the project history, this evolution is treated as a 2005 timeline and the phase labels below have been corrected accordingly.
+> **Timeline note**: A prior draft of this page mislabeled the phase dates. Per the project history, this evolution is treated as a 2025 timeline and the phase labels below have been corrected accordingly.
 
 ## 📋 Table of Contents
 
@@ -39,7 +39,7 @@ Control IBM PS (Power Supply) fan speeds while maintaining proper thermal manage
 
 ## 🔧 Hardware Architecture Evolution
 
-### **Phase 1: ATTiny45 Microcontroller Exploration (2005)**
+### **Phase 1: ATTiny45 Microcontroller Exploration (2025)**
 
 #### **Hardware Platform**
 - **Microcontroller**: ATmel ATTiny45 (8-bit AVR)
@@ -64,7 +64,7 @@ Evidence shows complete prototype hardware was constructed:
 - **Communication Limitations**: Limited UART capability for debugging
 - **Development Complexity**: Limited debugging and introspection capabilities
 
-### **Phase 2: ESP32-S2 Advanced Implementation (2005)**
+### **Phase 2: ESP32-S2 Advanced Implementation (2025)**
 
 #### **Hardware Platform Upgrade**
 - **Microcontroller**: ESP32-S2 (32-bit Xtensa LX7)
@@ -108,7 +108,7 @@ The ESP32-S2 implementation achieved full project functionality:
 - **Abundant Resources**: Sufficient memory and processing power for complex algorithms
 - **Rich Peripherals**: Multiple timers, ADCs, communication interfaces
 
-### **Phase 3: TM4C1294XL ARM Cortex-M4F Migration (2005)**
+### **Phase 3: TM4C1294XL ARM Cortex-M4F Migration (2025)**
 
 #### **Strategic Platform Migration**
 Despite ESP32-S2 success, migration to TM4C1294XL provided:
@@ -199,19 +199,19 @@ GitHub Copilot provided comprehensive evaluation of candidate platforms:
 ## ⚡ Technical Milestones & Breakthroughs
 
 ### **Milestone 1: ATTiny45 Proof of Concept**
-- **Date**: 2005
+- **Date**: 2025
 - **Achievement**: Basic PWM generation on 8-bit platform
 - **Learning**: Hardware timer limitations identified
 - **Impact**: Established minimum viable product baseline
 
 ### **Milestone 2: ESP32-S2 Complete Implementation**
-- **Date**: 2005
+- **Date**: 2025
 - **Achievement**: Full-featured IBM PS Fan Control system
 - **Features**: Dual modes, tach synthesis, real-time display, web interface
 - **Impact**: Proven concept with industrial-grade functionality
 
 ### **Milestone 3: TM4C1294XL Professional Platform**
-- **Date**: 2005
+- **Date**: 2025
 - **Achievement**: Industrial-grade ARM Cortex-M4F implementation
 - **Enhancements**: Higher precision, better debugging, comprehensive documentation
 - **Impact**: Production-ready embedded systems architecture
