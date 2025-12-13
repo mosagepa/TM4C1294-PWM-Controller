@@ -183,4 +183,5 @@ send-uart3:
 #   make auto CMD='PSYN 44\r' DURATION=8
 auto: flash
 	python3 tools/uart_session.py --uart0 "$(UART0_DEV)" --uart0-baud $(UART0_BAUD) --uart3 "$(UART3_DEV)" --uart3-baud $(UART3_BAUD) --duration $${DURATION:-10} $(if $(CMD),--send-uart3 "$(CMD)",)
+	@echo "AUTO FLOW: SUCCESS (build+flash+uart)"
 

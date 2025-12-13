@@ -45,11 +45,18 @@ def _mkdir_logs(base_dir: Path) -> Path:
     return base_dir
 
 
-def _reader_thread(spec: PortSpec, out_q: "queue.Queue[tuple[str, bytes]]", stop: threading.Event) -> None:
+def _reader_thread(
+    spec: PortSpec,
+    out_q: "queue.Queue[tuple[str, bytes]]",
+    err_q: "queue.Queue[str]",
+    stop: threading.Event,
+) -> None:
     try:
         ser = serial.Serial(spec.device, spec.baud, timeout=0.2)
     except Exception as exc:
-        out_q.put((spec.name, f"[ERROR opening {spec.device} @ {spec.baud}]: {exc}\n".encode("utf-8", "replace")))
+        msg = f"ERROR opening {spec.device} @ {spec.baud}: {exc}"
+        err_q.put(msg)
+        out_q.put((spec.name, f"[{msg}]\n".encode("utf-8", "replace")))
         return
 
     with ser:
@@ -57,7 +64,9 @@ def _reader_thread(spec: PortSpec, out_q: "queue.Queue[tuple[str, bytes]]", stop
             try:
                 chunk = ser.read(4096)
             except Exception as exc:
-                out_q.put((spec.name, f"[ERROR read {spec.device}]: {exc}\n".encode("utf-8", "replace")))
+                msg = f"ERROR read {spec.device}: {exc}"
+                err_q.put(msg)
+                out_q.put((spec.name, f"[{msg}]\n".encode("utf-8", "replace")))
                 return
 
             if chunk:
@@ -118,7 +127,10 @@ def main(argv: list[str]) -> int:
         return 2
 
     out_q: "queue.Queue[tuple[str, bytes]]" = queue.Queue()
+    err_q: "queue.Queue[str]" = queue.Queue()
     stop = threading.Event()
+
+    send_failed = False
 
     log_files: dict[str, Path] = {}
     log_fds: dict[str, object] = {}
@@ -128,7 +140,10 @@ def main(argv: list[str]) -> int:
             log_files[spec.name] = path
             log_fds[spec.name] = open(path, "ab", buffering=0)
 
-        threads = [threading.Thread(target=_reader_thread, args=(spec, out_q, stop), daemon=True) for spec in specs]
+        threads = [
+            threading.Thread(target=_reader_thread, args=(spec, out_q, err_q, stop), daemon=True)
+            for spec in specs
+        ]
         for t in threads:
             t.start()
 
@@ -140,6 +155,7 @@ def main(argv: list[str]) -> int:
                     ser.write(payload)
                     ser.flush()
             except Exception as exc:
+                send_failed = True
                 msg = f"[ERROR sending to {args.uart3} @ {args.uart3_baud}]: {exc}\n"
                 out_q.put(("UART3", msg.encode("utf-8", "replace")))
 
@@ -181,7 +197,17 @@ def main(argv: list[str]) -> int:
         for name, path in log_files.items():
             print(f"\nSaved {name} log: {path}")
 
-    return 0
+    had_uart_errors = not err_q.empty()
+    ok = (not send_failed) and (not had_uart_errors)
+
+    if not args.quiet:
+        print(f"\nRESULT: {'OK' if ok else 'FAIL'}")
+        if had_uart_errors:
+            print("Errors:")
+            while not err_q.empty():
+                print(f"- {err_q.get()}")
+
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
