@@ -221,6 +221,41 @@
 
 ---
 
+## Comment #007 - UART3 “Slick Prompt” Integration (Feature Branch)
+**Date**: December 20, 2025  
+**Context**: Integrate a robust, colored, line-editing UART3 UX while preserving precise PWM updates and keeping UART0 as the diagnostics channel  
+**Type**: Firmware UX / Architecture Update
+
+> ### Goals (what mattered most)
+> - **Keep PWM precise and unchanged in behavior** (no extra disable/enable “safety” wrappers that would introduce jitter)
+> - **Preserve UART0 (ICDI) diagnostics tooling** for memory / allocator / system health output
+> - **Make UART3 the “human-facing” console** with a resilient prompt, reconnect behavior, and line editing
+> - **Avoid blank screens on connect** by showing a welcome/prompt immediately when the session is established
+
+**Implementation Summary (feature branch `feature/uart3-slick-prompt`)**:
+- UART3 user interaction moved to a polling-driven command loop in `cmdline.c`, derived from the UX patterns in `otherC/ESP32_SLICKUART_forREFERENCE.c` (colors, prompt de-dup, basic line editing, Ctrl-U line kill).
+- `main.c` now treats UART3 as a “session”: on DTR connect (GPIO PQ1) it initializes the command line and runs until disconnect; UART3 interrupts are disabled and any legacy ISR is made safe/no-op.
+- PWM setting remains the same logic path; `set_pwm_percent()` was made non-static so the command handler can drive PWM without duplicating PWM logic.
+
+**Build/Link Fix Captured**:
+- A newlib link failure (`__ctype_ptr__`) was resolved by avoiding `<ctype.h>` in the UART3 command path and using the project-local helpers in `ctype_helpers.h` (e.g., `my_isspace`, `my_toupper`).
+
+**Documentation Artifacts (committed)**:
+- Delta doc: `docs/UART3-Slick-Prompt.md`
+- Printable PDF: `docs/pdfs/UART3-Slick-Prompt.pdf` (repo keeps `*.pdf` ignored globally, but allows `docs/pdfs/*.pdf`)
+
+**Why this structure is “clean”**:
+- UART0 stays authoritative for diagnostics (keeps debug output stable and predictable).
+- UART3 becomes a user console with predictable UX (prompt + editing + immediate welcome on connect).
+- PWM control remains centralized (no parallel PWM math in the command layer).
+
+**Learning Outcomes**:
+- For embedded CLIs, a polling session loop can be simpler and more reliable than interrupt-driven line accumulation when you also need reconnect semantics and prompt UX.
+- When using nonstandard/newlib configurations, treat `<ctype.h>` (and friends) as “link-sensitive” and prefer local helpers in constrained builds.
+
+
+---
+
 ## Comment #007 - Autonomous Build → Flash → UART Capture Flow
 **Date**: December 13, 2025  
 **Context**: Automating firmware iteration loop (build, flash, UART interaction, log capture)  
