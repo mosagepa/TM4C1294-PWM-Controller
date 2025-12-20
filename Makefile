@@ -185,3 +185,17 @@ auto: flash
 	python3 tools/uart_session.py --uart0 "$(UART0_DEV)" --uart0-baud $(UART0_BAUD) --uart3 "$(UART3_DEV)" --uart3-baud $(UART3_BAUD) --duration $${DURATION:-10} $(if $(CMD),--send-uart3 "$(CMD)",)
 	@echo "AUTO FLOW: SUCCESS (build+flash+uart)"
 
+# Timestamped zip + single-file upload to Google Drive (no sync).
+# Examples:
+#   make gdrive-backup
+#   make gdrive-backup RCLONE_REMOTE=gdrive GDRIVE_DIR=Backups
+#   make gdrive-backup BACKUP_DRY_RUN=1
+RCLONE_REMOTE ?= gdrive
+GDRIVE_DIR ?=
+BACKUP_DRY_RUN ?= 0
+
+gdrive-backup:
+	DRY_RUN="$(BACKUP_DRY_RUN)" RCLONE_REMOTE="$(RCLONE_REMOTE)" GDRIVE_DIR="$(GDRIVE_DIR)" bash tools/backup_upload_gdrive.sh "$(CURDIR)"
+
+backup: gdrive-backup
+

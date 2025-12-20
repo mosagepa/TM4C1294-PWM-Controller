@@ -80,18 +80,11 @@ uint32_t g_ui32SysClock;
 static uint32_t g_pwmPeriod = 0;
 static uint32_t g_pwmPulse  = 0;
 
-/* UART RX buffer - simple accumulator */
-static volatile char user_rx_buf[UART_RX_BUF_SIZE];
-
-static volatile uint32_t user_rx_len = 0;
-static volatile bool user_cmd_ready = false;
-
 /* Forward declarations */
 static void setup_system_clock(void);
 static void setup_pwm_pf2(void);
-static void set_pwm_percent(uint32_t percent);
+void set_pwm_percent(uint32_t percent);
 static void setup_uarts(void);
-static void process_user_line(const char *line);
 
 
 /* ICDI UART0 ISR - echo only */
@@ -120,103 +113,17 @@ void USERUARTIntHandler(void)
 
     ROM_UARTIntClear(UART3_BASE, ui32Status);
 
+    /* UART3 is handled by the cmdline (polling) module in the main loop.
+       Keep the ISR as a safe no-op in case UART3 interrupts are enabled by mistake. */
     while (ROM_UARTCharsAvail(UART3_BASE)) {
-
-        uint8_t c = ROM_UARTCharGetNonBlocking(UART3_BASE);
-
-        /* Echo immediately */
-        ROM_UARTCharPutNonBlocking(UART3_BASE, c);
-
-        /* Toggle PF4 LED on each received byte */
-        static uint8_t led = 0;
-        led = !led;
-        ROM_GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, led ? GPIO_PIN_4 : 0);
-
-        if (user_cmd_ready) continue;
-
-        if ((char)c == '\r' || (char)c == '\n') {
-
-            if (user_rx_len > 0) {
-                user_rx_buf[user_rx_len] = '\0';
-                user_cmd_ready = true;
-            } else {
-                /* Empty line - reprint prompt */
-                const char *p = "\r\n> ";
-                while (*p) ROM_UARTCharPutNonBlocking(UART3_BASE, *p++);
-            }
-
-        } else {
-            if (user_rx_len + 1 < UART_RX_BUF_SIZE) {
-                user_rx_buf[user_rx_len++] = (char)c;
-            } else {
-                /* Overflow - reset */
-                user_rx_len = 0;
-                const char *err = "\r\nERROR: line too long\r\n> ";
-                while (*err) ROM_UARTCharPutNonBlocking(UART3_BASE, *err++);
-            }
-        }
-    }
-
-}
-
-
-/* Command processing - exactly as in your pwm.c */
-static void process_user_line(const char *line)
-{
-    /* Skip leading spaces */
-    while (*line && my_isspace((unsigned char)*line)) line++;
-
-    char buf[UART_RX_BUF_SIZE];
-    strncpy(buf, line, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
-
-    char *saveptr = NULL;
-    char *tok = strtok_r(buf, " \t", &saveptr);
-    if (!tok) {
-        UARTSend((const uint8_t *)"\r\n> ", 4, UARTDEV_USER);
-        return;
-    }
-
-    /* Case-insensitive PSYN */
-    for (char *p = tok; *p; ++p) *p = (char)my_toupper((unsigned char)*p);
-
-    if (strcmp(tok, "PSYN") == 0) {
-        char *numtok = strtok_r(NULL, " \t", &saveptr);
-        if (!numtok) {
-            UARTSend((const uint8_t *)"\r\nERROR: missing value. Use: PSYN n  (n=5..96)\r\n> ", 51, UARTDEV_USER);
-            return;
-        }
-
-        char *endptr;
-        long val = strtol(numtok, &endptr, 10);
-        if (*endptr != '\0') {
-            UARTSend((const uint8_t *)"\r\nERROR: invalid number. Use: PSYN n\r\n> ", 41, UARTDEV_USER);
-            return;
-        }
-        if (val < PSYN_MIN || val > PSYN_MAX) {
-            UARTSend((const uint8_t *)"\r\nERROR: value out of range (5..96)\r\n> ", 41, UARTDEV_USER);
-            return;
-        }
-
-        /* Valid - update PWM using YOUR working function */
-        set_pwm_percent((uint32_t)val);
-
-        //static char ack[26];   // DUDA PORQUE AQUI HACE SNPRINTF !!!! --- DEBO "NEWLIBEAR" !!
-
-        //int n = snprintf(ack, 25, "\r\nOK: duty set to %ld%%\r\n> ", val);
-
-        //UARTSend((const uint8_t *)ack, (uint32_t)n, UARTDEV_USER);
-
-    } else {
-
-        UARTSend((const uint8_t *)"\r\nERROR: unknown command. Use: PSYN n\r\n> ", 43, UARTDEV_USER);
+        (void)ROM_UARTCharGetNonBlocking(UART3_BASE);
     }
 
 }
 
 
 /* PWM update - EXACTLY as in your working pwm.c (NO disable/enable!) */
-static void set_pwm_percent(uint32_t percent)
+void set_pwm_percent(uint32_t percent)
 {
     if (percent > 100) percent = 100;
     uint32_t pulse = (uint32_t)(((uint64_t)g_pwmPeriod * percent) / 100U);
@@ -306,8 +213,7 @@ static void setup_uarts(void)
     MAP_IntMasterEnable();
     ROM_IntEnable(INT_UART0);
     ROM_UARTIntEnable(UART0_BASE, UART_INT_RX | UART_INT_RT);
-    ROM_IntEnable(INT_UART3);
-    ROM_UARTIntEnable(UART3_BASE, UART_INT_RX | UART_INT_RT);
+    /* UART3 is handled by cmdline (polling). Leave UART3 interrupts disabled. */
 }
 
 
@@ -358,8 +264,8 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
     diag_puts("\n");
 
     /* simple decimal print helper assumed available; otherwise print small number */
-    /* call your process function */
-    process_user_line(cmd_local);
+     /* NOTE: UART3 command handling is now owned by cmdline.c.
+         This legacy helper is retained for allocator/memory diagnostics only. */
 
     /* spew out some diagnostic summaries... */
     diag_print_variable("g_pwmPeriod", (const void *)&g_pwmPeriod, sizeof(g_pwmPeriod), DIAG_PREVIEW_LIMIT);
@@ -505,10 +411,6 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
 
 int main(void)
 {
-
-    unsigned int currCopyCharIdx = 0;
-    unsigned char currCopyChar = 0x00;
-
     setup_system_clock();
 
     // Check if we had a hard fault (bit 31 of SCB->HFSR)
@@ -559,96 +461,10 @@ int main(void)
         UARTSend((const uint8_t *)"SESSION WAS INITIATED\r\n", 24, UARTDEV_ICDI);
         SysCtlDelay(g_ui32SysClock / (1000 * 12));
 
-        UARTSend((const uint8_t *)"\r\nPWM Ready. Enter command: PSYN n  (n = 5..96)\r\n> ", 52, UARTDEV_USER);
-
-        user_rx_len = 0;
-        user_cmd_ready = false;
-
-        /* Session active */
-        while (!ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
-
-            if (user_cmd_ready) {
-
-                ROM_IntDisable(INT_UART3);
-
-                // It seems this causes problems/ stalls IF it is
-                // declared after any previous invocations of
-                // the 'diag_test_malloc_with_gpio()' helper debug function !!!
-
-                // So, before THAT happens, let's launch this dynamic vector
-                // or buffer allocation, made by explicit calls to our helpers:
-
-                example_dynamic_cmd_copy_and_process(user_rx_buf,  \
-                  (user_rx_len < UART_RX_BUF_SIZE ? user_rx_len : UART_RX_BUF_SIZE - 1));
-
-                user_rx_len = 0;
-                user_cmd_ready = false;
-
-                ROM_IntEnable(INT_UART3);
-
-                /* Print again the (updated) memory layout with direct UART writes */
-                diag_print_memory_layout();
-
-
-                // ***** NOTE **** STALLS HAPPEN FROM HERE ON !!! *****
-
-                uint32_t len = user_rx_len;
-                char cmd_local[UART_RX_BUF_SIZE];
-
-                if (len >= UART_RX_BUF_SIZE) len = UART_RX_BUF_SIZE - 1;
-
-                if (len > 0) {
-
-                    UARTSend((const uint8_t *)"cmd_local BEFORE memcpy: ", 25, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)cmd_local, len, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)"\r\n", 2, UARTDEV_ICDI);
-
-                    //static unsigned int i;
-
-                    for (currCopyCharIdx = 0; currCopyCharIdx < len; currCopyCharIdx++) {
-
-                        currCopyChar = user_rx_buf[currCopyCharIdx];
-
-                        //tiny_sprintf_hex((char *)(hexShowBuf + 9), "%02X", (uint8_t)currCopyChar);
-                        //usprintf((char *)(hexShowBuf + 9), 3, "%02X", (uint8_t)currCopyChar);
-                        //UARTSend((const uint8_t *)hexShowBuf, 13, UARTDEV_ICDI);
-
-                        //i = 0;
-
-                        //while (hexShowBuf[i]) MAP_UARTCharPutNonBlocking(UART0_BASE, hexShowBuf[i++]);
-                        //MAP_UARTCharPut(UART0_BASE, hexShowBuf[9]);
-                        //MAP_UARTCharPutNonBlocking(UART0_BASE, hexShowBuf[10]);
-
-                        cmd_local[currCopyCharIdx] = currCopyChar;
-                    }
-
-                    //memcpy(cmd_local, (const void *)user_rx_buf, len); -- MEMCPY CORRUPTS!!!
-                    cmd_local[len] = '\0';
-
-                    UARTSend((const uint8_t *)"PARSED THIS COMMAND: ", 21, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)cmd_local, len, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)"\r\n", 2, UARTDEV_ICDI);
-
-                } else {
-
-                    cmd_local[0] = '\0';
-
-                }
-
-                user_rx_len = 0;
-                user_cmd_ready = false;
-
-                if (cmd_local[0] != '\0') {
-                    process_user_line(cmd_local);
-                }
-
-            }
-
-            ROM_IntEnable(INT_UART3);
-
-            ROM_SysCtlSleep();
-
-        }
+        /* UART3 interactive session handled by the slick cmdline module.
+           It will return when DTR indicates disconnect. */
+        cmdline_init();
+        cmdline_run_until_disconnect();
 
         UARTSend((const uint8_t *)"SESSION WAS DISCONNECTED\r\n", 27, UARTDEV_ICDI);
 

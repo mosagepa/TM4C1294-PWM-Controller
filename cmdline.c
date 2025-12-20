@@ -16,7 +16,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <ctype.h>
+
+/* Use minimal ASCII helpers (avoid newlib ctype table dependencies) */
+#include "ctype_helpers.h"
 
 /* Use the project's strtok_compat if present */
 #include "strtok_compat.h"
@@ -104,6 +106,13 @@ static void send_welcome_and_prompt_once(void)
     prompt_print_once();
 }
 
+static void print_help(void)
+{
+    output_puts("\r\nCommands:\r\n");
+    output_puts("  PSYN n    Set PWM duty (n = 5..96)\r\n");
+    output_puts("  HELP      Show this help\r\n");
+}
+
 /* echo a backspace erase sequence */
 static void uart_echo_bs(void)
 {
@@ -118,7 +127,7 @@ static void handle_line_and_respond(const char *line)
     if (!line) { prompt_print_once(); return; }
 
     /* Trim leading whitespace */
-    while (*line && isspace((unsigned char)*line)) line++;
+    while (*line && my_isspace((unsigned char)*line)) line++;
 
     if (*line == '\0') { prompt_print_once(); return; }
 
@@ -130,7 +139,13 @@ static void handle_line_and_respond(const char *line)
     char *tok = strtok_r(copy, " \t", &saveptr);
     if (!tok) { prompt_print_once(); return; }
 
-    for (char *p = tok; *p; ++p) *p = (char)toupper((unsigned char)*p);
+    for (char *p = tok; *p; ++p) *p = (char)my_toupper((unsigned char)*p);
+
+    if (strcmp(tok, "HELP") == 0 || strcmp(tok, "?") == 0) {
+        print_help();
+        prompt_print_once();
+        return;
+    }
 
     if (strcmp(tok, "PSYN") == 0) {
         char *arg = strtok_r(NULL, " \t", &saveptr);
@@ -164,7 +179,9 @@ static void handle_line_and_respond(const char *line)
         /* Acknowledge using UARTSend so it goes through the project's wrapper */
         char ack[64];
         int n = snprintf(ack, sizeof(ack), "\r\nOK: duty set to %ld%%\r\n", val);
+        output_puts(ANSI_RESPONSE);
         if (n > 0) UARTSend((const uint8_t *)ack, (uint32_t)n, UARTDEV_USER);
+        output_puts(ANSI_RESET);
 
         prompt_print_once();
         return;
@@ -249,7 +266,7 @@ void cmdline_run_until_disconnect(void)
 
             /* Printable char: uppercase-as-you-type */
             if ((unsigned char)c >= 32) {
-                char uc = (char)toupper((unsigned char)c);
+                char uc = (char)my_toupper((unsigned char)c);
                 ROM_UARTCharPutNonBlocking(UART3_BASE, uc);
                 if (linepos + 1 < UART_RX_BUF_SIZE) {
                     linebuf_local[linepos++] = uc;
