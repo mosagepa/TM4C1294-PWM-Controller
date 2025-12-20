@@ -107,10 +107,15 @@ FLASHER_FLAGS=
 # Project name (W/O .c extension eg. "main")
 PROJECT_NAME = integr_V03
 
-# UART device defaults (override: `make capture UART0_DEV=/dev/ttyACM0 UART3_DEV=/dev/ttyUSB1`)
-UART0_DEV ?= /dev/ttyACM0
+# UART device defaults (override: `make capture UART0_DEV=... UART3_DEV=...`)
+# For the record / canonical lab setup:
+# - UART0 (ICDI diagnostics @ 9600): TI ICDI on /dev/ttyACM0
+# - UART3 (USER console @ 115200): external USB-UART on /dev/ttyUSB1
+#
+# Prefer stable /dev/serial/by-id paths when present (avoids ttyUSB renumbering).
+UART0_DEV ?= $(or $(firstword $(wildcard /dev/serial/by-id/usb-Texas_Instruments_In-Circuit_Debug_Interface_*-if00)),/dev/ttyACM0)
 UART0_BAUD ?= 9600
-UART3_DEV ?= /dev/ttyUSB1
+UART3_DEV ?= $(or $(firstword $(wildcard /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_*-if00-port0)),/dev/ttyUSB1)
 UART3_BAUD ?= 115200
 
 # Startup file name (W/O .c extension eg. "LM4F_startup")
