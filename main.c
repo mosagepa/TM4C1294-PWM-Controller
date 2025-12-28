@@ -92,6 +92,7 @@ static void setup_pwm_pf2(void);
 static void set_pwm_percent(uint32_t percent);
 static void setup_uarts(void);
 static void process_user_line(const char *line);
+static void user_uart3_consume_pending_input(void);
 
 
 /* ICDI UART0 ISR - echo only */
@@ -201,6 +202,10 @@ static void process_user_line(const char *line)
         /* Valid - update PWM using YOUR working function */
         set_pwm_percent((uint32_t)val);
 
+          /* Always re-print prompt after a successful command.
+              (Errors already include their own trailing "> ".) */
+          UARTSend((const uint8_t *)"\r\n> ", 4, UARTDEV_USER);
+
         //static char ack[26];   // DUDA PORQUE AQUI HACE SNPRINTF !!!! --- DEBO "NEWLIBEAR" !!
 
         //int n = snprintf(ack, 25, "\r\nOK: duty set to %ld%%\r\n> ", val);
@@ -212,6 +217,51 @@ static void process_user_line(const char *line)
         UARTSend((const uint8_t *)"\r\nERROR: unknown command. Use: PSYN n\r\n> ", 43, UARTDEV_USER);
     }
 
+}
+
+
+/*
+   When terminals send CRLF, the ISR will typically mark the command ready
+   on '\r' and later echo '\n'. If we print the prompt while UART3 interrupts
+   are disabled (as we do during command processing), that delayed '\n' can
+   arrive after the prompt and move the cursor to a new line with no prompt,
+   creating the "needs an extra ENTER" symptom.
+
+   To avoid touching the UART3 ISR, we opportunistically consume any pending
+   RX bytes here (while IRQ is disabled). We swallow lone EOL tails and, if
+   any real characters are already queued (user typed quickly), we handle
+   them with the same accumulate/echo logic so they are not lost.
+*/
+static void user_uart3_consume_pending_input(void)
+{
+    while (ROM_UARTCharsAvail(UART3_BASE)) {
+        int32_t rc = ROM_UARTCharGetNonBlocking(UART3_BASE);
+        if (rc < 0) {
+            break;
+        }
+
+        char c = (char)rc;
+
+        /* Swallow extra CR/LF tails after a completed command line. */
+        if (c == '\n' || c == '\r') {
+            continue;
+        }
+
+        /* Re-echo (ISR would have echoed) */
+        ROM_UARTCharPutNonBlocking(UART3_BASE, (uint8_t)c);
+
+        if (user_cmd_ready) {
+            continue;
+        }
+
+        if (user_rx_len + 1 < UART_RX_BUF_SIZE) {
+            user_rx_buf[user_rx_len++] = c;
+        } else {
+            user_rx_len = 0;
+            const char *err = "\r\nERROR: line too long\r\n> ";
+            while (*err) ROM_UARTCharPutNonBlocking(UART3_BASE, *err++);
+        }
+    }
 }
 
 
@@ -584,6 +634,11 @@ int main(void)
                 user_rx_len = 0;
                 user_cmd_ready = false;
 
+                                /* Consume any pending CR/LF tail (and preserve real chars if any)
+                                     before re-enabling the UART3 ISR, to prevent the delayed '\n'
+                                     from moving the cursor past our freshly-printed prompt. */
+                                user_uart3_consume_pending_input();
+
                 ROM_IntEnable(INT_UART3);
 
                 /* Print again the (updated) memory layout with direct UART writes */
@@ -646,7 +701,10 @@ int main(void)
 
             ROM_IntEnable(INT_UART3);
 
-            ROM_SysCtlSleep();
+                /* Do not sleep indefinitely waiting for UART interrupts.
+                    DTR is polled (no GPIO interrupt), so we must wake periodically
+                    to notice disconnect immediately without requiring an ENTER on UART0. */
+                SysCtlDelay(g_ui32SysClock / 300);
 
         }
 
