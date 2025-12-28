@@ -42,6 +42,9 @@ extern void * _sbrk(ptrdiff_t incr);
 // diagnose memory allocations and all that
 #include "diag_uart.h"
 
+#include "ui_uart3.h"
+#include "commands.h"
+
 #include "inc/hw_ints.h"
 #include "inc/hw_memmap.h"
 #include "inc/hw_types.h"
@@ -86,6 +89,36 @@ static volatile char user_rx_buf[UART_RX_BUF_SIZE];
 static volatile uint32_t user_rx_len = 0;
 static volatile bool user_cmd_ready = false;
 
+/* Hidden keystroke feature: 5 consecutive 'P' typed on UART3 triggers UART0 GOTCHA. */
+static volatile uint8_t g_uart3_p_run = 0;
+static volatile bool g_uart3_gotcha_pending = false;
+static const char g_uart0_gotcha_msg[] = "\r\nGOTCHA: PPPPP detected on UART3\r\n";
+
+static void flash_pf4_gotcha(uint32_t flashes)
+{
+    /* PF4 is already configured as GPIO output in setup_uarts(). */
+    const uint32_t delay_ticks = g_ui32SysClock / 40U; /* ~75ms at 120MHz (SysCtlDelay loop is ~3 cycles) */
+    for (uint32_t i = 0; i < flashes; i++) {
+        ROM_GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, GPIO_PIN_4);
+        SysCtlDelay(delay_ticks);
+        ROM_GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, 0);
+        SysCtlDelay(delay_ticks);
+    }
+}
+
+/* UART0 diagnostics gating (default OFF). */
+static volatile bool g_debug_enabled = false;
+
+void debug_set_enabled(bool enabled)
+{
+    g_debug_enabled = enabled;
+}
+
+bool debug_is_enabled(void)
+{
+    return g_debug_enabled;
+}
+
 /* Forward declarations */
 static void setup_system_clock(void);
 static void setup_pwm_pf2(void);
@@ -93,6 +126,12 @@ static void set_pwm_percent(uint32_t percent);
 static void setup_uarts(void);
 static void process_user_line(const char *line);
 static void user_uart3_consume_pending_input(void);
+
+/* Expose PWM setter to higher-level command module without changing ISR logic. */
+void pwm_set_percent(uint32_t percent)
+{
+    set_pwm_percent(percent);
+}
 
 
 /* ICDI UART0 ISR - echo only */
@@ -125,7 +164,61 @@ void USERUARTIntHandler(void)
 
         uint8_t c = ROM_UARTCharGetNonBlocking(UART3_BASE);
 
-        /* Echo immediately */
+        if (user_cmd_ready) {
+            /* Ignore extra RX bytes until main loop consumes the line. */
+            continue;
+        }
+
+        /* Handle backspace/delete locally (do not allow erasing prompt). */
+        if (c == '\b' || c == 0x7FU) {
+            g_uart3_p_run = 0;
+            if (user_rx_len > 0) {
+                user_rx_len--;
+                ROM_UARTCharPutNonBlocking(UART3_BASE, '\b');
+                ROM_UARTCharPutNonBlocking(UART3_BASE, ' ');
+                ROM_UARTCharPutNonBlocking(UART3_BASE, '\b');
+            } else {
+                /* Bell if user tries to backspace past prompt. */
+                ROM_UARTCharPutNonBlocking(UART3_BASE, '\a');
+            }
+            continue;
+        }
+
+        /* Enter handling */
+        if ((char)c == '\r' || (char)c == '\n') {
+            g_uart3_p_run = 0;
+            if (user_rx_len > 0) {
+                /* Echo newline once, finalize command. */
+                ROM_UARTCharPutNonBlocking(UART3_BASE, '\r');
+                ROM_UARTCharPutNonBlocking(UART3_BASE, '\n');
+                user_rx_buf[user_rx_len] = '\0';
+                user_cmd_ready = true;
+            } else {
+                /* Empty line: do NOTHING (no extra newline, no extra prompt). */
+            }
+            continue;
+        }
+
+        /* Uppercase-as-you-type for printable letters (ESP32-style). */
+        if (c >= 'a' && c <= 'z') {
+            c = (uint8_t)(c - 'a' + 'A');
+        }
+
+        /* Hidden GOTCHA: trigger immediately on 5 consecutive 'P' keystrokes. */
+        if (c == 'P') {
+            if (g_uart3_p_run < 5) {
+                g_uart3_p_run++;
+            }
+            if (g_uart3_p_run == 5) {
+                g_uart3_gotcha_pending = true;
+                /* Restart counting so long runs only trigger every 5. */
+                g_uart3_p_run = 0;
+            }
+        } else {
+            g_uart3_p_run = 0;
+        }
+
+        /* Echo normal characters immediately */
         ROM_UARTCharPutNonBlocking(UART3_BASE, c);
 
         /* Toggle PF4 LED on each received byte */
@@ -133,28 +226,14 @@ void USERUARTIntHandler(void)
         led = !led;
         ROM_GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_4, led ? GPIO_PIN_4 : 0);
 
-        if (user_cmd_ready) continue;
-
-        if ((char)c == '\r' || (char)c == '\n') {
-
-            if (user_rx_len > 0) {
-                user_rx_buf[user_rx_len] = '\0';
-                user_cmd_ready = true;
-            } else {
-                /* Empty line - reprint prompt */
-                const char *p = "\r\n> ";
-                while (*p) ROM_UARTCharPutNonBlocking(UART3_BASE, *p++);
-            }
-
+        if (user_rx_len + 1 < UART_RX_BUF_SIZE) {
+            user_rx_buf[user_rx_len++] = (char)c;
         } else {
-            if (user_rx_len + 1 < UART_RX_BUF_SIZE) {
-                user_rx_buf[user_rx_len++] = (char)c;
-            } else {
-                /* Overflow - reset */
-                user_rx_len = 0;
-                const char *err = "\r\nERROR: line too long\r\n> ";
-                while (*err) ROM_UARTCharPutNonBlocking(UART3_BASE, *err++);
-            }
+            /* Overflow - reset */
+            user_rx_len = 0;
+            g_uart3_p_run = 0;
+            const char *err = "\r\nERROR: line too long\r\n> ";
+            while (*err) ROM_UARTCharPutNonBlocking(UART3_BASE, *err++);
         }
     }
 
@@ -386,30 +465,21 @@ static int tiny_sprintf_hex(char *buf, const char *fmt, uint8_t value)
 
 void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint32_t len)
 {
-
-    /* allocate len+1 bytes */
-    char *cmd_local = (char *)malloc((size_t)len + 1);
-    if (!cmd_local) {
-        diag_puts("ERROR: malloc for cmd_local failed\r\n");
+    if (!debug_is_enabled()) {
         return;
     }
 
-    /* copy and NUL-terminate */
-    if (len > 0) {
-        memcpy(cmd_local, (const void *)user_rx_buf, len);
+    char cmd_local[UART_RX_BUF_SIZE];
+    if (len >= UART_RX_BUF_SIZE) len = UART_RX_BUF_SIZE - 1;
+    for (uint32_t i = 0; i < len; i++) {
+        cmd_local[i] = (char)user_rx_buf[i];
     }
     cmd_local[len] = '\0';
 
-    /* Print the pointer and length for diagnostics (ICDI UART) */
-    diag_puts("cmd_local ptr = ");
-    diag_put_ptr((void *)cmd_local);
-    diag_puts(" ; len = ");
+    /* Print the length for diagnostics (ICDI UART) */
+    diag_puts("DEBUG: cmd len = ");
     diag_put_hex32(len);
-    diag_puts("\n");
-
-    /* simple decimal print helper assumed available; otherwise print small number */
-    /* call your process function */
-    process_user_line(cmd_local);
+    diag_puts("\r\n");
 
     /* spew out some diagnostic summaries... */
     diag_print_variable("g_pwmPeriod", (const void *)&g_pwmPeriod, sizeof(g_pwmPeriod), DIAG_PREVIEW_LIMIT);
@@ -547,9 +617,6 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
 
     diag_print_variables_summary();
 
-    /* free when done */
-    free(cmd_local);
-
 }
 
 
@@ -609,13 +676,20 @@ int main(void)
         UARTSend((const uint8_t *)"SESSION WAS INITIATED\r\n", 24, UARTDEV_ICDI);
         SysCtlDelay(g_ui32SysClock / (1000 * 12));
 
-        UARTSend((const uint8_t *)"\r\nPWM Ready. Enter command: PSYN n  (n = 5..96)\r\n> ", 52, UARTDEV_USER);
+        /* UART3 welcome/prompt (pure output; does not touch ISR mechanics) */
+        ui_uart3_session_begin();
 
         user_rx_len = 0;
         user_cmd_ready = false;
 
         /* Session active */
         while (!ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
+
+            if (g_uart3_gotcha_pending) {
+                g_uart3_gotcha_pending = false;
+                UARTSend((const uint8_t *)g_uart0_gotcha_msg, (uint32_t)(sizeof(g_uart0_gotcha_msg) - 1U), UARTDEV_ICDI);
+                flash_pf4_gotcha(5U);
+            }
 
             if (user_cmd_ready) {
 
@@ -628,78 +702,34 @@ int main(void)
                 // So, before THAT happens, let's launch this dynamic vector
                 // or buffer allocation, made by explicit calls to our helpers:
 
-                example_dynamic_cmd_copy_and_process(user_rx_buf,  \
-                  (user_rx_len < UART_RX_BUF_SIZE ? user_rx_len : UART_RX_BUF_SIZE - 1));
+                uint32_t len = user_rx_len;
+                if (len >= UART_RX_BUF_SIZE) len = UART_RX_BUF_SIZE - 1;
+
+                char cmd_local[UART_RX_BUF_SIZE];
+                for (uint32_t i = 0; i < len; i++) {
+                    cmd_local[i] = (char)user_rx_buf[i];
+                }
+                cmd_local[len] = '\0';
 
                 user_rx_len = 0;
                 user_cmd_ready = false;
 
-                                /* Consume any pending CR/LF tail (and preserve real chars if any)
-                                     before re-enabling the UART3 ISR, to prevent the delayed '\n'
-                                     from moving the cursor past our freshly-printed prompt. */
-                                user_uart3_consume_pending_input();
+                /* Consume any pending CR/LF tail (and preserve real chars if any). */
+                user_uart3_consume_pending_input();
 
                 ROM_IntEnable(INT_UART3);
 
-                /* Print again the (updated) memory layout with direct UART writes */
-                diag_print_memory_layout();
-
-
-                // ***** NOTE **** STALLS HAPPEN FROM HERE ON !!! *****
-
-                uint32_t len = user_rx_len;
-                char cmd_local[UART_RX_BUF_SIZE];
-
-                if (len >= UART_RX_BUF_SIZE) len = UART_RX_BUF_SIZE - 1;
-
-                if (len > 0) {
-
-                    UARTSend((const uint8_t *)"cmd_local BEFORE memcpy: ", 25, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)cmd_local, len, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)"\r\n", 2, UARTDEV_ICDI);
-
-                    //static unsigned int i;
-
-                    for (currCopyCharIdx = 0; currCopyCharIdx < len; currCopyCharIdx++) {
-
-                        currCopyChar = user_rx_buf[currCopyCharIdx];
-
-                        //tiny_sprintf_hex((char *)(hexShowBuf + 9), "%02X", (uint8_t)currCopyChar);
-                        //usprintf((char *)(hexShowBuf + 9), 3, "%02X", (uint8_t)currCopyChar);
-                        //UARTSend((const uint8_t *)hexShowBuf, 13, UARTDEV_ICDI);
-
-                        //i = 0;
-
-                        //while (hexShowBuf[i]) MAP_UARTCharPutNonBlocking(UART0_BASE, hexShowBuf[i++]);
-                        //MAP_UARTCharPut(UART0_BASE, hexShowBuf[9]);
-                        //MAP_UARTCharPutNonBlocking(UART0_BASE, hexShowBuf[10]);
-
-                        cmd_local[currCopyCharIdx] = currCopyChar;
-                    }
-
-                    //memcpy(cmd_local, (const void *)user_rx_buf, len); -- MEMCPY CORRUPTS!!!
-                    cmd_local[len] = '\0';
-
-                    UARTSend((const uint8_t *)"PARSED THIS COMMAND: ", 21, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)cmd_local, len, UARTDEV_ICDI);
-                    UARTSend((const uint8_t *)"\r\n", 2, UARTDEV_ICDI);
-
-                } else {
-
-                    cmd_local[0] = '\0';
-
+                if (cmd_local[0] != '\0') {
+                    commands_process_line(cmd_local);
                 }
 
-                user_rx_len = 0;
-                user_cmd_ready = false;
-
-                if (cmd_local[0] != '\0') {
-                    process_user_line(cmd_local);
+                /* Optional UART0 diagnostics (default OFF). */
+                if (debug_is_enabled()) {
+                    example_dynamic_cmd_copy_and_process(user_rx_buf, len);
+                    diag_print_memory_layout();
                 }
 
             }
-
-            ROM_IntEnable(INT_UART3);
 
                 /* Do not sleep indefinitely waiting for UART interrupts.
                     DTR is polled (no GPIO interrupt), so we must wake periodically

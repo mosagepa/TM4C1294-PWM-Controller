@@ -1,0 +1,34 @@
+# Focused test: empty ENTER does nothing; backspace erases but can't cross prompt.
+DTR 1
+SLEEP 0.5
+
+# Two empty ENTER presses (should produce NO new output on UART3)
+SEND
+SLEEP 0.5
+SEND
+SLEEP 0.5
+
+# Type ABC then backspace 4 times (last should bell)
+TYPE ABC\b\b\b\b
+SLEEP 0.8
+
+# Press ENTER after erasing all (should do nothing)
+SEND
+SLEEP 0.8
+
+# A normal command should still work
+SEND PSYN 44
+SLEEP 2.0
+
+# Toggle diagnostics
+SEND DEBUG ON
+SLEEP 0.8
+SEND PSYN 45
+SLEEP 2.0
+SEND DEBUG OFF
+SLEEP 0.8
+SEND PSYN 46
+SLEEP 2.0
+
+# End session
+DTR 0

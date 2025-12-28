@@ -221,6 +221,40 @@
 
 ---
 
+## Comment #007 - UART UX, Hidden GOTCHA, and Test Workflow
+**Date**: December 28, 2025  
+**Context**: UART3 console UX fixes + ESP32-inspired UI recovery + host automation updates  
+**Type**: Engineering Notes
+
+### Decisions and constraints (kept intentionally)
+
+- **No ISR architecture redesign**: fixes were done at the session/parse layer and main-loop polling; the RX ISR stays ISR-driven and lightweight.
+- **Empty ENTER on UART3 is a no-op**: no extra newline, no extra prompt spam.
+- **Backspace/Delete is bounded at prompt**: erase stops at buffer start; bell (`\a`) indicates “can’t erase further”.
+- **DTR disconnect is handled immediately**: DTR on PQ1 is polled frequently so “SESSION WAS DISCONNECTED” shows without requiring an ENTER on UART0.
+- **UART0 diagnostics are gated**: `DEBUG ON/OFF` controls verbose UART0 prints; default is OFF.
+
+### GOTCHA (hidden feature)
+
+- Trigger: **5 consecutive `P` keystrokes** typed on UART3 (no ENTER required).
+- Result: prints a UART0 message immediately and flashes PF4 LED 5 times (timing intentionally slowed per testing feedback).
+- Not listed in `HELP` and not implemented as a command.
+
+### Rainbow banner (ESP32 Version73 look)
+
+- Banner output at session-begin must be **deterministic and low-risk**.
+- Avoid libc-heavy / dynamic string construction in the session-begin output path; use a constant ANSI banner sent via `UARTSend`.
+
+### Host test workflow notes
+
+- `tools/uart_session.py` defaults were tuned to be less brittle:
+    - `--send-delay` default `0.6`
+    - `--type-delay` default `0.02`
+    - preflight/postflight enabled by default; opt out with `--no-preflight` / `--no-postflight`
+- To test the real-time GOTCHA trigger, use `TYPE PPPPP` (not a line-based send that appends ENTER).
+
+---
+
 ## Comment #007 - Autonomous Build → Flash → UART Capture Flow
 **Date**: December 13, 2025  
 **Context**: Automating firmware iteration loop (build, flash, UART interaction, log capture)  

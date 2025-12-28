@@ -113,6 +113,7 @@ UART0_BAUD ?= 9600
 UART3_DEV ?= /dev/ttyUSB1
 UART3_BAUD ?= 115200
 
+
 # Startup file name (W/O .c extension eg. "LM4F_startup")
 STARTUP_FILE = TM4C1294XL_startup
 
@@ -172,15 +173,15 @@ flash: all
 capture:
 	python3 tools/uart_session.py --uart0 "$(UART0_DEV)" --uart0-baud $(UART0_BAUD) --uart3 "$(UART3_DEV)" --uart3-baud $(UART3_BAUD) --duration 0
 
-# Send a command to UART3 (example: `make send-uart3 CMD='PSYN 44\r'`)
+# Send a command to UART3 (example: `make send-uart3 CMD='PSYN 44\r\n'`)
 send-uart3:
-	@if [ -z "$(CMD)" ]; then echo "ERROR: provide CMD='...'. Example: make send-uart3 CMD='PSYN 44\\r'"; exit 2; fi
+	@if [ -z "$(CMD)" ]; then echo "ERROR: provide CMD='...'. Example: make send-uart3 CMD='PSYN 44\\r\\n'"; exit 2; fi
 	python3 tools/uart_session.py --no-uart0 --uart3 "$(UART3_DEV)" --uart3-baud $(UART3_BAUD) --send-uart3 "$(CMD)" --duration 1 --quiet
 
 # Autonomous build + flash + capture + optional UART3 command
 # Examples:
 #   make auto
-#   make auto CMD='PSYN 44\r' DURATION=8
+#   make auto CMD='PSYN 44\r\n' DURATION=8
 auto: flash
 	python3 tools/uart_session.py --uart0 "$(UART0_DEV)" --uart0-baud $(UART0_BAUD) --uart3 "$(UART3_DEV)" --uart3-baud $(UART3_BAUD) --duration $${DURATION:-10} $(if $(CMD),--send-uart3 "$(CMD)",)
 	@echo "AUTO FLOW: SUCCESS (build+flash+uart)"

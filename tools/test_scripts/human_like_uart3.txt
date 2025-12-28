@@ -1,0 +1,56 @@
+# Human-like UART3 scenario (comments must NOT be sent)
+# Notes:
+# - 'send' with no payload = press ENTER (CRLF)
+# - 'send <text>' auto-appends CRLF unless --no-auto-crlf
+# - 'type <text>' sends bytes as-is (no auto-CRLF)
+
+# Ensure session is active
+DTR 1
+SLEEP 0.5
+
+# 1) Valid PSYN
+SEND PSYN 44
+# allow long UART0 diagnostics to finish so next commands don't concatenate
+SLEEP 8
+
+# 2) Off-limits PSYN
+SEND PSYN 4
+SLEEP 1.5
+
+# 3) Single ENTER (empty line)
+SEND
+SLEEP 0.8
+
+# 4) Badly formed command
+SEND PSYN X
+SLEEP 1.0
+
+# 5) HELP
+SEND HELP
+SLEEP 1.5
+
+# 6) Type 10-15 random letters, then ENTER
+TYPE aZkLmNqRsTuV
+SEND
+SLEEP 1.0
+
+# 7) Get "stuck" typing 8 P characters, then ENTER
+TYPE PPPPPPPP
+SEND
+SLEEP 1.0
+
+# 8) Back to random chars again, then ENTER
+TYPE qWeRtY
+SEND
+SLEEP 1.0
+
+# 9) Trigger GOTCHA (exactly 5 P + ENTER)
+SEND PPPPP
+SLEEP 1.5
+
+# 10) Final PSYN
+SEND PSYN 50
+SLEEP 2.0
+
+# 11) Sudden closure of UART3 session
+DTR 0
