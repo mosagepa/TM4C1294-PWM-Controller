@@ -228,7 +228,8 @@ void tsyn_init(uint32_t sysclk_hz)
     TimerIntEnable(TSYN_SCHED_TIMER_BASE, TIMER_TIMA_TIMEOUT);
 
     IntRegister(TSYN_SCHED_INT, Timer4AIntHandler);
-    IntEnable(TSYN_SCHED_INT);
+    /* Keep IRQ disabled until TSYN is explicitly enabled. */
+    IntDisable(TSYN_SCHED_INT);
 
     /* Default idle state: PM3 low (open-drain). */
     pm3_set_gpio_low();
@@ -242,6 +243,11 @@ void tsyn_set_enabled(bool enabled)
     if (enabled) {
         if (g_tsyn_enabled) return;
 
+        /* Avoid race with a pending Timer4A timeout. */
+        IntDisable(TSYN_SCHED_INT);
+        TimerDisable(TSYN_SCHED_TIMER_BASE, TIMER_A);
+        TimerIntClear(TSYN_SCHED_TIMER_BASE, TIMER_TIMA_TIMEOUT);
+
         g_tsyn_enabled = true;
 
         /* Disable tach capture on PM3 while we are driving the pin. */
@@ -251,16 +257,22 @@ void tsyn_set_enabled(bool enabled)
         g_state = TSYN_STATE_TAIL;
         g_curr_pulses = 0;
         g_curr_tail_us = 1;
+
+        IntEnable(TSYN_SCHED_INT);
         tsyn_schedule_cycles(1);
         return;
     }
 
     if (!g_tsyn_enabled) return;
 
+    /* Prevent Timer4A ISR from re-arming the burst while we tear down. */
+    IntDisable(TSYN_SCHED_INT);
+    TimerDisable(TSYN_SCHED_TIMER_BASE, TIMER_A);
+    TimerIntClear(TSYN_SCHED_TIMER_BASE, TIMER_TIMA_TIMEOUT);
+
     g_tsyn_enabled = false;
     g_state = TSYN_STATE_OFF;
 
-    TimerDisable(TSYN_SCHED_TIMER_BASE, TIMER_A);
     tsyn_pwm_disable();
 
     /* Return PM3 to low, then restore tach capture input configuration. */
