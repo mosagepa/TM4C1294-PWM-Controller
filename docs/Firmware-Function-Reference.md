@@ -48,6 +48,19 @@ Public wrapper used by the command layer.
 
 - Delegates to `set_pwm_percent(percent)`.
 
+### `void pwm_set_enabled(bool enabled)`
+
+Enables/disables PWM output on PF2.
+
+- `enabled=true`: restores PF2 mux to `M0PWM2` and enables PWM output.
+- `enabled=false`: disables PWM output and reconfigures PF2 as GPIO output low.
+
+This exists primarily to support `PSYN OFF` for scope/debug, so the tach input can be observed without PWM coupling.
+
+### `bool pwm_is_enabled(void)`
+
+Returns the current PWM output enabled state.
+
 ### `static void set_pwm_percent(uint32_t percent)`
 
 Sets PWM duty cycle without disabling/re-enabling the generator.
@@ -187,8 +200,11 @@ Parses and executes one complete command line.
 - Uppercases command token.
 - Supported commands:
   - `PSYN n` — sets PWM duty (5..96).
+  - `PSYN ON` — enables PWM on PF2.
+  - `PSYN OFF` — disables PWM and forces PF2 low.
   - `HELP` — prints help.
   - `DEBUG ON|OFF` — gates UART0 diagnostics.
+  - `EXIT` — closes the current UART3 session (no arguments).
 
 ### `void pwm_set_percent(uint32_t percent)` (declared in commands.h)
 

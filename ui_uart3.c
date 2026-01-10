@@ -80,7 +80,7 @@ void ui_uart3_session_begin(void)
     if (!g_session_welcome_printed) {
         ui_uart3_print_rainbow_banner();
         ui_uart3_puts(ANSI_WELCOME);
-        ui_uart3_puts("PWM Ready. Commands: PSYN n | HELP\r\n");
+        ui_uart3_puts("PWM Ready. Commands: PSYN n | HELP | EXIT\r\n");
         ui_uart3_puts(ANSI_RESET);
         ui_uart3_prompt_once();
         g_session_welcome_printed = true;

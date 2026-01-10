@@ -9,6 +9,8 @@
 #include "strtok_compat.h"
 #include "ui_uart3.h"
 
+#include "tach.h"
+
 #ifndef PSYN_MIN
 #define PSYN_MIN 5
 #endif
@@ -39,10 +41,63 @@ static void cmd_help(void)
 {
     ui_uart3_puts("\r\nAvailable commands:\r\n");
     ui_uart3_puts("  PSYN n      Set PWM duty (n=5..96)\r\n");
+    ui_uart3_puts("  PSYN ON     Enable PWM on PF2\r\n");
+    ui_uart3_puts("  PSYN OFF    Disable PWM and force PF2 low\r\n");
+    ui_uart3_puts("  TACHIN ON   Start printing RPM on UART0 every 0.5s\r\n");
+    ui_uart3_puts("  TACHIN OFF  Stop printing RPM on UART0\r\n");
     ui_uart3_puts("  HELP        This help\r\n");
+    ui_uart3_puts("  EXIT        Close UART3 session\r\n");
     ui_uart3_puts("  DEBUG ON    Enable UART0 diagnostics\r\n");
     ui_uart3_puts("  DEBUG OFF   Disable UART0 diagnostics (default)\r\n");
     ui_uart3_prompt_once();
+}
+
+static void cmd_tachin(const char *arg)
+{
+    if (!arg || *arg == '\0') {
+        tach_set_reporting(true);
+        ui_uart3_puts("\r\nOK: TACHIN ON (printing RPM on UART0)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    char mode[8];
+    size_t i = 0;
+    while (arg[i] && i + 1 < sizeof(mode)) {
+        mode[i] = (char)my_toupper((unsigned char)arg[i]);
+        i++;
+    }
+    mode[i] = '\0';
+
+    if (strcmp(mode, "ON") == 0) {
+        tach_set_reporting(true);
+        ui_uart3_puts("\r\nOK: TACHIN ON (printing RPM on UART0)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(mode, "OFF") == 0) {
+        tach_set_reporting(false);
+        ui_uart3_puts("\r\nOK: TACHIN OFF\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    ui_uart3_puts("\r\nERROR: invalid value. Use: TACHIN ON | TACHIN OFF\r\n");
+    ui_uart3_prompt_once();
+}
+
+static void cmd_exit(const char *arg)
+{
+    if (arg && *arg != '\0') {
+        ui_uart3_puts("\r\nERROR: EXIT takes no arguments\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    ui_uart3_puts("\r\nClosing session...\r\n");
+    uart3_request_disconnect();
+    /* No prompt here; session will close and UART0 will emit disconnect diagnostics. */
 }
 
 static void cmd_debug(const char *arg)
@@ -82,7 +137,29 @@ static void cmd_debug(const char *arg)
 static void cmd_psyn(const char *arg)
 {
     if (!arg || *arg == '\0') {
-        ui_uart3_puts("\r\nERROR: missing value. Use: PSYN n  (n=5..96)\r\n");
+        ui_uart3_puts("\r\nERROR: missing value. Use: PSYN n | PSYN ON | PSYN OFF\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    /* Allow PSYN ON/OFF as a convenience when working on the scope. */
+    char mode[8];
+    size_t mi = 0;
+    while (arg[mi] && mi + 1 < sizeof(mode)) {
+        mode[mi] = (char)my_toupper((unsigned char)arg[mi]);
+        mi++;
+    }
+    mode[mi] = '\0';
+
+    if (strcmp(mode, "OFF") == 0) {
+        pwm_set_enabled(false);
+        ui_uart3_puts("\r\nOK: PWM OFF (PF2 forced low)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+    if (strcmp(mode, "ON") == 0) {
+        pwm_set_enabled(true);
+        ui_uart3_puts("\r\nOK: PWM ON\r\n");
         ui_uart3_prompt_once();
         return;
     }
@@ -102,6 +179,10 @@ static void cmd_psyn(const char *arg)
     }
 
     pwm_set_percent((uint32_t)val);
+    /* If PWM was previously disabled for scope/debug, numeric PSYN turns it back on. */
+    if (!pwm_is_enabled()) {
+        pwm_set_enabled(true);
+    }
 
     /* Avoid snprintf (newlib stalls were previously observed). */
     char num[11];
@@ -150,6 +231,16 @@ void commands_process_line(const char *line)
 
     if (strcmp(tok, "DEBUG") == 0) {
         cmd_debug(strtok_r(NULL, " \t", &saveptr));
+        return;
+    }
+
+    if (strcmp(tok, "TACHIN") == 0) {
+        cmd_tachin(strtok_r(NULL, " \t", &saveptr));
+        return;
+    }
+
+    if (strcmp(tok, "EXIT") == 0) {
+        cmd_exit(strtok_r(NULL, " \t", &saveptr));
         return;
     }
 

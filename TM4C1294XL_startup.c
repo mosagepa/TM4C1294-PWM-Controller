@@ -21,6 +21,8 @@ extern void main(void);
 //void Timer0A_Handler(void);      /* timer ISR used for 1 Hz heartbeat */
 void ICDIUARTIntHandler(void);
 void USERUARTIntHandler(void);
+void SysTickIntHandler(void);
+void GPIOMIntHandler(void);
 
 
 /* Standard handlers (prototypes) */
@@ -58,7 +60,7 @@ void(* myvectors[])(void) = {
     empty_def_handler,      // Debug monitor             12
     0,                      // Reserved                  13
     empty_def_handler,      // PendSV                    14
-    empty_def_handler,      // SysTick                   15
+    SysTickIntHandler,      // SysTick                   15
 
     /* Peripheral interrupts start here. */
     empty_def_handler,      // GPIO Port A               16
@@ -133,7 +135,7 @@ void(* myvectors[])(void) = {
     0,                      // Reserved                  83
     empty_def_handler,      // I2C 4 Master & Slave      84
     empty_def_handler,      // I2C 5 Master & Slave      85
-    empty_def_handler,      // GPIO Port M               86
+    GPIOMIntHandler,        // GPIO Port M               86
     empty_def_handler,      // GPIO Port N               87
     0,                      // Reserved                  88
     empty_def_handler,      // Tamper                    89

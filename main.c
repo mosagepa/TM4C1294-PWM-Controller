@@ -64,6 +64,9 @@ extern void * _sbrk(ptrdiff_t incr);
 
 #include "utils/ustdlib.h"
 
+#include "timebase.h"
+#include "tach.h"
+
 
 uint32_t g_ui32SysClock;
 
@@ -82,6 +85,7 @@ uint32_t g_ui32SysClock;
 /* PWM globals - as in your working pwm.c */
 static uint32_t g_pwmPeriod = 0;
 static uint32_t g_pwmPulse  = 0;
+static bool g_pwm_enabled = true;
 
 /* UART RX buffer - simple accumulator */
 static volatile char user_rx_buf[UART_RX_BUF_SIZE];
@@ -93,6 +97,14 @@ static volatile bool user_cmd_ready = false;
 static volatile uint8_t g_uart3_p_run = 0;
 static volatile bool g_uart3_gotcha_pending = false;
 static const char g_uart0_gotcha_msg[] = "\r\nGOTCHA: PPPPP detected on UART3\r\n";
+
+/* Software-requested close of the UART3 session (EXIT command). */
+static volatile bool g_uart3_force_disconnect = false;
+/* When a software EXIT closes the session, require a DTR release (idle/high)
+    before allowing a new session to begin. This prevents immediate auto-reopen
+    when the host keeps DTR asserted. */
+static volatile bool g_uart3_require_dtr_release = false;
+static volatile bool g_uart3_sw_disconnect_requested = false;
 
 static void flash_pf4_gotcha(uint32_t flashes)
 {
@@ -119,6 +131,12 @@ bool debug_is_enabled(void)
     return g_debug_enabled;
 }
 
+void uart3_request_disconnect(void)
+{
+    g_uart3_force_disconnect = true;
+    g_uart3_sw_disconnect_requested = true;
+}
+
 /* Forward declarations */
 static void setup_system_clock(void);
 static void setup_pwm_pf2(void);
@@ -131,6 +149,30 @@ static void user_uart3_consume_pending_input(void);
 void pwm_set_percent(uint32_t percent)
 {
     set_pwm_percent(percent);
+}
+
+void pwm_set_enabled(bool enabled)
+{
+    if (enabled) {
+        /* Restore PF2 to PWM function and enable output. */
+        GPIOPinConfigure(GPIO_PF2_M0PWM2);
+        GPIOPinTypePWM(GPIO_PORTF_BASE, GPIO_PIN_2);
+        PWMPulseWidthSet(PWM0_BASE, PWM_OUT_2, g_pwmPulse);
+        PWMOutputState(PWM0_BASE, PWM_OUT_2_BIT, true);
+        g_pwm_enabled = true;
+        return;
+    }
+
+    /* Disable PWM output and force PF2 low for clean scope viewing. */
+    PWMOutputState(PWM0_BASE, PWM_OUT_2_BIT, false);
+    GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_2);
+    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0);
+    g_pwm_enabled = false;
+}
+
+bool pwm_is_enabled(void)
+{
+    return g_pwm_enabled;
 }
 
 
@@ -389,6 +431,8 @@ static void setup_pwm_pf2(void)
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_2, init_pulse);
     PWMOutputState(PWM0_BASE, PWM_OUT_2_BIT, true);
     PWMGenEnable(PWM0_BASE, PWM_GEN_1);
+
+    g_pwm_enabled = true;
 }
 
 
@@ -646,6 +690,10 @@ int main(void)
     setup_pwm_pf2();
     setup_uarts();
 
+    /* Non-blocking timebase + tach input (does not touch PWM mechanics). */
+    timebase_init(g_ui32SysClock);
+    tach_init();
+
     /* Initial basic probing of the _sbrk allocation callback/ helper */
     //diag_sbrk_probe();
 
@@ -666,6 +714,22 @@ int main(void)
 
     for (;;) {
 
+        /* If the user closed the session via EXIT, do not immediately restart
+           while the host still asserts DTR. Require DTR to return to idle/high
+           (e.g., close/reopen terminal) before accepting a new session. */
+        if (g_uart3_require_dtr_release) {
+            UARTSend((const uint8_t *)"WAITING FOR DTR RELEASE\r\n", 25, UARTDEV_ICDI);
+            while (!ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
+                SysCtlDelay(g_ui32SysClock / (1000 * 100));
+            }
+
+            /* Re-enable UART3 RX now that the host released DTR. */
+            ROM_IntEnable(INT_UART3);
+            ROM_UARTIntEnable(UART3_BASE, UART_INT_RX | UART_INT_RT);
+
+            g_uart3_require_dtr_release = false;
+        }
+
         /* Wait for DTR session */
         UARTSend((const uint8_t *)"NO SESSION ACTIVE\r\n", 20, UARTDEV_ICDI);
 
@@ -679,11 +743,16 @@ int main(void)
         /* UART3 welcome/prompt (pure output; does not touch ISR mechanics) */
         ui_uart3_session_begin();
 
+        g_uart3_force_disconnect = false;
+
         user_rx_len = 0;
         user_cmd_ready = false;
 
         /* Session active */
-        while (!ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
+        while (!ROM_GPIOPinRead(DTR_PORT, DTR_PIN) && !g_uart3_force_disconnect) {
+
+            /* Periodic tach reporting to UART0 if enabled (TACHIN command). */
+            tach_task();
 
             if (g_uart3_gotcha_pending) {
                 g_uart3_gotcha_pending = false;
@@ -737,6 +806,18 @@ int main(void)
                 SysCtlDelay(g_ui32SysClock / 300);
 
         }
+
+        /* If the loop ended because of software EXIT, latch closed-until-release.
+           Also silence UART3 RX so the terminal appears disconnected (user must
+           close/reopen or toggle DTR to start a new session). */
+        if (g_uart3_force_disconnect && g_uart3_sw_disconnect_requested) {
+            g_uart3_require_dtr_release = true;
+            ROM_UARTIntDisable(UART3_BASE, UART_INT_RX | UART_INT_RT);
+            ROM_IntDisable(INT_UART3);
+        }
+
+        g_uart3_force_disconnect = false;
+        g_uart3_sw_disconnect_requested = false;
 
         UARTSend((const uint8_t *)"SESSION WAS DISCONNECTED\r\n", 27, UARTDEV_ICDI);
 

@@ -283,6 +283,13 @@ static uint32_t g_ui32CmdIdx = 0;
 
 #### Supported Commands
 
+- `PSYN n` (n = 5..96): Set PWM duty cycle
+- `PSYN ON|OFF`: Enable PWM output / disable PWM and force PF2 low
+- `TACHIN ON|OFF`: Start/stop printing tach-derived RPM on UART0
+- `HELP`: Show command help
+- `DEBUG ON|OFF`: Enable/disable UART0 diagnostics output
+- `EXIT`: Close the current UART3 session (no arguments; errors if any are provided)
+
 ##### PSYN Command
 - **Syntax**: `PSYN n` (where n = 5 to 96)
 - **Function**: Set PWM duty cycle

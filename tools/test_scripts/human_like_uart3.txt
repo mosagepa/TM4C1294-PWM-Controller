@@ -29,6 +29,14 @@ SLEEP 1.0
 SEND HELP
 SLEEP 1.5
 
+# 5b) Turn PWM OFF briefly (PF2 forced low)
+SEND PSYN OFF
+SLEEP 1.0
+
+# 5c) Turn PWM back ON
+SEND PSYN ON
+SLEEP 1.0
+
 # 6) Type 10-15 random letters, then ENTER
 TYPE aZkLmNqRsTuV
 SEND
@@ -44,13 +52,21 @@ TYPE qWeRtY
 SEND
 SLEEP 1.0
 
-# 9) Trigger GOTCHA (exactly 5 P + ENTER)
-SEND PPPPP
+# 9) Trigger GOTCHA (exactly 5 P keystrokes, no ENTER required)
+TYPE PPPPP
 SLEEP 1.5
 
 # 10) Final PSYN
 SEND PSYN 50
 SLEEP 2.0
 
-# 11) Sudden closure of UART3 session
+# 11) EXIT with argument (should error: no argument needed)
+SEND EXIT whatever
+SLEEP 1.0
+
+# 12) EXIT (should close UART3 session)
+SEND EXIT
+SLEEP 1.0
+
+# 13) Ensure session is closed
 DTR 0

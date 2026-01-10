@@ -326,3 +326,82 @@ Yes: `README.md` links `GHCP_COMMENTS.md` near the top under “AI Collaboration
 **Repository**: [TM4C1294-PWM-Controller](https://github.com/mosagepa/TM4C1294-PWM-Controller)  
 **AI Assistant**: GitHub Copilot (Claude Sonnet 4)  
 **Collaboration Model**: Technical mentoring with hands-on implementation
+
+---
+
+## Comment #008 - TACH Sensing Bring-Up (GPIO IRQ + 0.5s RPM stream)
+**Date**: January 9, 2026  
+**Context**: Add interrupt-driven TACH input sensing, with UART0 (ICDI) periodic RPM prints for lab characterization under PSYN PWM setpoints.  
+**Type**: Firmware Feature Bring-Up + Lab Caveats
+
+### Goal (what we wanted)
+
+- Allocate a GPIO as a **TACH input** for a real fan/power-supply fan.
+- Use **interrupts** (not polling) to count pulses.
+- Provide a UART3 command `TACHIN` to start/stop **UART0 (ICDI) prints every 0.5s** showing implied RPM.
+- Keep existing **PWM mechanics untouched** (PF2 @ ~21.5kHz PWM0 M0PWM2) and avoid destabilizing UART3 session UX.
+
+### Assumptions (fan tach model)
+
+- Common PC/PSU fans output an **open-collector** TACH.
+- Typical signal is **2 pulses per revolution**.
+- User’s formula for display: `RPM = pulses_per_sec * 30`.
+    - With a 0.5s measurement window: `pulses_per_sec = pulses/0.5 = 2*pulses` ⇒ `RPM = 60*pulses_in_window`.
+- Tach pulse train often has **~50% duty cycle**; this does not affect counting falling edges, but it matters when thinking about signal conditioning and noise.
+
+### Firmware changes made (high level)
+
+- Added a tiny **SysTick millisecond timebase**:
+    - Files: `timebase.c/.h`
+    - Startup vector updated so SysTick calls `SysTickIntHandler()`.
+
+- Added a **tach module** with GPIO interrupt pulse counting:
+    - Files: `tach.c/.h`
+    - Initially implemented on PK0, then moved to **PM3** for physical convenience on the EK-TM4C1294XL header.
+    - Startup vector updated so GPIO Port M calls `GPIOMIntHandler()`.
+
+- Integrated with the main loop without touching PWM:
+    - `timebase_init(g_ui32SysClock)` and `tach_init()` called once.
+    - `tach_task()` runs in the session loop to emit periodic UART0 lines.
+
+- Added `TACHIN [ON|OFF]` command:
+    - Implemented in `commands.c`.
+    - Command runs on UART3, but the periodic RPM stream prints on UART0.
+
+### Electrical caveats (critical)
+
+- TM4C GPIOs are **3.3V**. The internal pull-up (`GPIO_PIN_TYPE_STD_WPU`) pulls to **3.3V**, and is **weak**.
+- Do **NOT** pull up the fan tach to **+5V** and feed it directly into the MCU pin.
+    - If the tach source is open-collector and previously used an external 4k7 to +5V, remove that for this bring-up.
+    - If you must keep a 5V pull-up, use a level shifter / transistor.
+
+### Lab observations (problem encountered)
+
+- First lab results produced **absurdly large RPM readings** (~1,000,000 RPM equivalent), and the mapping vs `PSYN` looked inconsistent.
+- Interpretation: the MCU was likely counting **PWM-coupled noise/glitches** (tens of kHz) rather than real tach edges (hundreds of Hz typical).
+- The previously observed scope “aliasing/mangling” between 21.5kHz PWM and the tach line is consistent with this: cheap scopes + long leads + open-collector signals can make the tach look corrupted.
+
+### Mitigation implemented (so tests can proceed)
+
+- Added an ISR-level **minimum edge spacing** glitch filter:
+    - `TACH_MIN_EDGE_US` (default 200 µs).
+    - This rejects edges that arrive too quickly to be real tach pulses, and should suppress ~21.5kHz PWM coupling (period ~46 µs).
+    - New diagnostic counters: accepted `pulses` and rejected `rejects`.
+
+- UART0 output now prints:
+    - `TACH pulses=<n> rejects=<n> rpm=<n>` every 0.5s.
+    - A one-time banner on enable: `TACHIN ON: gpio_base=... pin_mask=... edge=FALL pullup=WPU`.
+
+### Practical test checklist for next lab session
+
+- Confirm tach wiring is open-collector to **PM3**, with **no +5V pull-up**.
+- Ensure fan tach ground and MCU ground are common.
+- Run `TACHIN ON` then try a few `PSYN` values.
+- Watch `rejects`:
+    - If `rejects` is huge: noise/EMI dominates; consider external pull-up to 3.3V (e.g., 2.2k–4.7k) and/or small RC filtering.
+    - If `pulses` is ~0: no edges; suspect wiring/pin mismatch, fan tach not toggling, or pull-up too weak.
+
+### Notes on “do not break PWM” constraint
+
+- PWM setup and update logic (PF2, PWM0, 21.5kHz) was intentionally left unchanged.
+- Tach sensing was added as an **independent** GPIO interrupt path plus a non-blocking periodic reporting task.
