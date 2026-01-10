@@ -1,0 +1,86 @@
+
+Analysis of physical PS FAN's TACH signal
+performed on a Kingst LA1010 Logic Analyzer
+-------------------------------------------
+
+CONCLUSIONS (tests on Sat Jan 10, 2026):
+
+-The TACH signal consists of repetitive bursts of a variable
+ number of equally spaced (in theory) pulses. The number of
+ pulses in each burst as well as the (typical) spacing
+ between consecutive bursts for a fixed PWM regime imposed
+ to the fan (via the 'PSYN n' user command) varies on an
+ inverse experimental function of the duty cycle for the
+ imposed PWM regime.
+
+-The base frequency for the bursts (during the pulses section)
+ appears to wander around the nominal 21.5kHz, and so such
+ an (exact) base frequency will need to be synthesized by the
+ firmware in order to fake the most purely possible TACH to
+ feed to the original PS electronics in order to exert PWM
+ control by our firmware without the PS "noticing"...
+
+-The "aliasing" or imperfect sampling of the TACH signal when
+ using a simple procedure fails, as we've been in our firmware
+ implementations up to now; this is caused precisely by the
+ existance of those "burst end" sections, at which the TACH
+ signal stays for a brief pause on logical '0' before a new
+ burst starts firing, due to those sections' width wandering
+ also as a function of the applied PWM (see details below),
+ thus confounding any "naive" oscilloscope analysis, making
+ the wave appear as a PWM-noise contamined version, impeding
+ even its proper frequency determination from the scope by
+ visual means only ---and that's why a logic analyzer was
+ needed for proper insight...
+
+-The following table gives experimental details obtained
+ on the Kingst LA1010 logic analyzer (set up with a high-
+ enough richness, Sample rate = 1MHz & Sample depth = 200kSa):
+
+   n in applied    bursts apx.  # pulses/    '0' typical tail
+   'PSYN n' cmd    exp. duty%   each burst   after each burst
+   ------------    ----------   ----------   ----------------
+        06             93            98        34- 40 uS
+        15            82-85          50        69-116 uS
+        25            59-63          36        72-112 uS
+        40            47-52          29        90-115 uS
+        50            39-42          28        87-117 uS
+        62            35-37          23
+        80            20-21          19
+
+-Note that the previous table is not exact nor exhaustive;
+ even with that we can devise the following "algorithm"
+ for our generation of a suitable, clean mimicked version:
+
+-We need to generate an integer number of pulses of base
+ freq. 21.5kHz, the number of pulses being an interpolated
+ number from the set points in the table (using the first
+ two columns) from the 'n' value for PSYN from the user.
+ Then we must generate a "blank tail", i.e. a '0' level
+ tail for a number of microseconds equal to the midpoint
+ of each line in the table (also we'd need to apply some
+ kind of simple interpolation on the midpoints, from the
+ given experimental data). If more data points are needed
+ we can always refine the table in intervals of, say,
+ 5% units for 'n' and even take means over a number of
+ observed bursts enough to yield a "fixed" estimate for
+ each setpoint for both the # of pulses to generate and
+ the "0-tail" length to maintain for each PWM regime wanted.
+
+-We will also be taking experimental data as richly as
+ we can possibly can, using the REAL regimes for the IBM PS
+ while the server is working in its different regimes
+ (with higher or lighted loads) as it seems we can easily
+ "sample"/ "intercept" the real TACH response of the IBM
+ when fed and working inside the server as would normally
+ happend. These further notes will server to refine our
+ "algorithm" for the TACH faking of what the IBM needs to
+ "see" in order for it not to downgrade or even switch down
+ services...
+
+
+   
+     
+ 
+
+

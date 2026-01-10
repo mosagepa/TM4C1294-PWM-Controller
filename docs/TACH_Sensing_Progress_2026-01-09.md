@@ -99,6 +99,16 @@ Expected qualitative behaviors:
 4) Record a few lines of UART0 output including both `pulses` and `rejects`.
 5) If needed, tune the glitch filter (e.g., try 100–1000µs) by changing `TACH_MIN_EDGE_US`.
 
+## Additional Notes
+
+New lab notes (2026-01-10) indicate the physical IBM PS tach line is *bursty* (bursts of ~21.5kHz pulses followed by a low tail), which can alias badly with naive fixed-window counting.
+See: [LEEME_MOSA_TACH_ANALYSIS.TXT](../LEEME_MOSA_TACH_ANALYSIS.TXT)
+
+### Plan (based on lab notes)
+
+Add a `TSYN ON|OFF` mode that drives **PM3** with a clean, synthesized “tach-like” burst waveform whose parameters are interpolated from the lab table vs the currently requested `PSYN n`.
+Implement the 21.5kHz carrier using a hardware timer output, and only use interrupts at burst boundaries (low interrupt rate).
+While TSYN is ON, disable tach capture interrupts on PM3 to avoid self-triggering.
 ---
 
 Generated: 2026-01-09

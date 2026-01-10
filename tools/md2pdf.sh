@@ -161,6 +161,7 @@ EOF
 
 pandoc_args=(
   "$in_md"
+  -f markdown-yaml_metadata_block
   -o "$out_pdf"
   --pdf-engine="$engine"
   -V "papersize=$paper"

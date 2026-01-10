@@ -22,6 +22,8 @@ static volatile uint32_t g_tach_pulses = 0;
 static volatile uint32_t g_tach_rejects = 0;
 static volatile uint32_t g_last_edge_cycles = 0;
 
+static volatile bool g_tach_capture_enabled = true;
+
 static volatile bool g_tach_reporting = false;
 static uint32_t g_next_report_ms = 0;
 
@@ -105,11 +107,45 @@ void tach_init(void)
 
     IntEnable(TACH_GPIO_INT);
 
+    g_tach_capture_enabled = true;
+
     g_tach_pulses = 0;
     g_tach_rejects = 0;
     g_last_edge_cycles = 0;
     g_tach_reporting = false;
     g_next_report_ms = 0;
+}
+
+void tach_set_capture_enabled(bool enabled)
+{
+    if (enabled) {
+        if (g_tach_capture_enabled) return;
+
+        /* Restore input + pull-up and enable falling-edge interrupt capture. */
+        GPIOPadConfigSet(TACH_GPIO_BASE, TACH_GPIO_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
+        GPIOPinTypeGPIOInput(TACH_GPIO_BASE, TACH_GPIO_PIN);
+
+        GPIOIntDisable(TACH_GPIO_BASE, TACH_GPIO_PIN);
+        GPIOIntClear(TACH_GPIO_BASE, TACH_GPIO_PIN);
+        GPIOIntTypeSet(TACH_GPIO_BASE, TACH_GPIO_PIN, GPIO_FALLING_EDGE);
+        GPIOIntEnable(TACH_GPIO_BASE, TACH_GPIO_PIN);
+
+        IntEnable(TACH_GPIO_INT);
+        g_tach_capture_enabled = true;
+        return;
+    }
+
+    if (!g_tach_capture_enabled) return;
+
+    GPIOIntDisable(TACH_GPIO_BASE, TACH_GPIO_PIN);
+    GPIOIntClear(TACH_GPIO_BASE, TACH_GPIO_PIN);
+    IntDisable(TACH_GPIO_INT);
+    g_tach_capture_enabled = false;
+}
+
+bool tach_is_capture_enabled(void)
+{
+    return g_tach_capture_enabled;
 }
 
 void tach_set_reporting(bool enabled)

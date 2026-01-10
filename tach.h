@@ -32,6 +32,10 @@
 
 void tach_init(void);
 
+/* Enable/disable GPIO interrupt capture on the tach pin (PM3 by default). */
+void tach_set_capture_enabled(bool enabled);
+bool tach_is_capture_enabled(void);
+
 /* Enable/disable periodic reporting to UART0 (ICDI). */
 void tach_set_reporting(bool enabled);
 bool tach_is_reporting(void);

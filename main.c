@@ -66,6 +66,7 @@ extern void * _sbrk(ptrdiff_t incr);
 
 #include "timebase.h"
 #include "tach.h"
+#include "tsyn.h"
 
 
 uint32_t g_ui32SysClock;
@@ -86,6 +87,7 @@ uint32_t g_ui32SysClock;
 static uint32_t g_pwmPeriod = 0;
 static uint32_t g_pwmPulse  = 0;
 static bool g_pwm_enabled = true;
+static uint32_t g_pwm_percent_requested = TARGET_DUTY_PERCENT_INIT;
 
 /* UART RX buffer - simple accumulator */
 static volatile char user_rx_buf[UART_RX_BUF_SIZE];
@@ -148,7 +150,13 @@ static void user_uart3_consume_pending_input(void);
 /* Expose PWM setter to higher-level command module without changing ISR logic. */
 void pwm_set_percent(uint32_t percent)
 {
+    g_pwm_percent_requested = percent;
     set_pwm_percent(percent);
+}
+
+uint32_t pwm_get_percent_requested(void)
+{
+    return g_pwm_percent_requested;
 }
 
 void pwm_set_enabled(bool enabled)
@@ -425,6 +433,7 @@ static void setup_pwm_pf2(void)
     if (init_pulse >= period) init_pulse = period - 1;
     if (init_pulse == 0) init_pulse = 1;
     g_pwmPulse = init_pulse;
+    g_pwm_percent_requested = TARGET_DUTY_PERCENT_INIT;
 
     PWMGenConfigure(PWM0_BASE, PWM_GEN_1, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
     PWMGenPeriodSet(PWM0_BASE, PWM_GEN_1, period);
@@ -693,6 +702,7 @@ int main(void)
     /* Non-blocking timebase + tach input (does not touch PWM mechanics). */
     timebase_init(g_ui32SysClock);
     tach_init();
+    tsyn_init(g_ui32SysClock);
 
     /* Initial basic probing of the _sbrk allocation callback/ helper */
     //diag_sbrk_probe();

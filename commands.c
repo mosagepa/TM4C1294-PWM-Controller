@@ -10,6 +10,7 @@
 #include "ui_uart3.h"
 
 #include "tach.h"
+#include "tsyn.h"
 
 #ifndef PSYN_MIN
 #define PSYN_MIN 5
@@ -43,12 +44,48 @@ static void cmd_help(void)
     ui_uart3_puts("  PSYN n      Set PWM duty (n=5..96)\r\n");
     ui_uart3_puts("  PSYN ON     Enable PWM on PF2\r\n");
     ui_uart3_puts("  PSYN OFF    Disable PWM and force PF2 low\r\n");
+    ui_uart3_puts("  TSYN ON     Start TACH synth on PM3 (bursty waveform)\r\n");
+    ui_uart3_puts("  TSYN OFF    Stop TACH synth and restore PM3 input\r\n");
     ui_uart3_puts("  TACHIN ON   Start printing RPM on UART0 every 0.5s\r\n");
     ui_uart3_puts("  TACHIN OFF  Stop printing RPM on UART0\r\n");
     ui_uart3_puts("  HELP        This help\r\n");
     ui_uart3_puts("  EXIT        Close UART3 session\r\n");
     ui_uart3_puts("  DEBUG ON    Enable UART0 diagnostics\r\n");
     ui_uart3_puts("  DEBUG OFF   Disable UART0 diagnostics (default)\r\n");
+    ui_uart3_prompt_once();
+}
+
+static void cmd_tsyn(const char *arg)
+{
+    if (!arg || *arg == '\0') {
+        ui_uart3_puts("\r\nERROR: missing value. Use: TSYN ON | TSYN OFF\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    char mode[8];
+    size_t i = 0;
+    while (arg[i] && i + 1 < sizeof(mode)) {
+        mode[i] = (char)my_toupper((unsigned char)arg[i]);
+        i++;
+    }
+    mode[i] = '\0';
+
+    if (strcmp(mode, "ON") == 0) {
+        tsyn_set_enabled(true);
+        ui_uart3_puts("\r\nOK: TSYN ON (PM3 driven; tach capture disabled)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(mode, "OFF") == 0) {
+        tsyn_set_enabled(false);
+        ui_uart3_puts("\r\nOK: TSYN OFF (PM3 restored to tach input)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    ui_uart3_puts("\r\nERROR: invalid value. Use: TSYN ON | TSYN OFF\r\n");
     ui_uart3_prompt_once();
 }
 
@@ -236,6 +273,11 @@ void commands_process_line(const char *line)
 
     if (strcmp(tok, "TACHIN") == 0) {
         cmd_tachin(strtok_r(NULL, " \t", &saveptr));
+        return;
+    }
+
+    if (strcmp(tok, "TSYN") == 0) {
+        cmd_tsyn(strtok_r(NULL, " \t", &saveptr));
         return;
     }
 

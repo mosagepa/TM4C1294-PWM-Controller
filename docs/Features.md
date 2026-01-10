@@ -285,6 +285,7 @@ static uint32_t g_ui32CmdIdx = 0;
 
 - `PSYN n` (n = 5..96): Set PWM duty cycle
 - `PSYN ON|OFF`: Enable PWM output / disable PWM and force PF2 low
+- `TSYN ON|OFF`: Start/stop driving PM3 with a bursty tach-synth waveform (disables tach capture while ON)
 - `TACHIN ON|OFF`: Start/stop printing tach-derived RPM on UART0
 - `HELP`: Show command help
 - `DEBUG ON|OFF`: Enable/disable UART0 diagnostics output

@@ -7,6 +7,9 @@
 /* Must be provided by the platform (TM4C main.c). */
 void pwm_set_percent(uint32_t percent);
 
+/* Returns last requested PSYN percent (n value). */
+uint32_t pwm_get_percent_requested(void);
+
 /* Allows temporarily forcing PF2 low (PWM OFF) for scope/debug. */
 void pwm_set_enabled(bool enabled);
 bool pwm_is_enabled(void);

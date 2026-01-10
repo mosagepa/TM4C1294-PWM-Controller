@@ -199,12 +199,17 @@ Parses and executes one complete command line.
 - Trims leading whitespace.
 - Uppercases command token.
 - Supported commands:
+ 
   - `PSYN n` — sets PWM duty (5..96).
   - `PSYN ON` — enables PWM on PF2.
   - `PSYN OFF` — disables PWM and forces PF2 low.
+  - `TACHIN ON` — start printing tach/RPM lines on UART0 every 0.5s.
+  - `TACHIN OFF` — stop printing tach/RPM lines on UART0.
   - `HELP` — prints help.
   - `DEBUG ON|OFF` — gates UART0 diagnostics.
   - `EXIT` — closes the current UART3 session (no arguments).
+  - `TSYN ON` — enable TACH synthesizer on PM3 (drives burst waveform).
+  - `TSYN OFF` — disable TACH synthesizer (restores PM3 to tach input).
 
 ### `void pwm_set_percent(uint32_t percent)` (declared in commands.h)
 
@@ -213,6 +218,185 @@ Platform-provided PWM setter (implemented in [main.c](../main.c)).
 ### `void debug_set_enabled(bool enabled)` / `bool debug_is_enabled(void)` (declared in commands.h)
 
 Platform-provided debug gating API (implemented in [main.c](../main.c)).
+
+---
+
+## timebase.c / timebase.h
+
+Minimal SysTick-based timebase used by the tach sensing path.
+
+---
+
+### `void timebase_init(uint32_t sysClockHz)`
+
+Initializes SysTick to generate a 1ms interrupt and establishes the reference clock for cycle-based delta timing.
+
+- Configures a 1ms tick using `SysTickPeriodSet(sysClockHz / 1000)`.
+- Enables SysTick interrupt and SysTick counter.
+- Stores:
+  - `g_sysclk_hz` (for later conversion and debug)
+  - `g_systick_reload` (cycles per millisecond)
+
+Dependency note:
+
+- The SysTick vector in [TM4C1294XL_startup.c](../TM4C1294XL_startup.c) must point to `SysTickIntHandler()`.
+
+### `uint32_t timebase_millis(void)`
+
+Returns a monotonically increasing millisecond tick counter.
+
+- Implemented as an ISR-incremented counter (`g_ms_ticks`).
+- Read uses a short global interrupt disable/enable to snapshot consistently.
+
+### `uint32_t timebase_cycles32(void)`
+
+Returns a 32-bit “cycle-ish” counter derived from SysTick.
+
+- Computes:
+  - `cycles = ms * reload + (reload - SysTickValueGet())`
+- Samples `g_ms_ticks` twice to avoid race at the millisecond boundary.
+- Intended for **short delta measurements**; wraps naturally at 32 bits.
+
+### `uint32_t timebase_sysclk_hz(void)`
+
+Returns the system clock rate passed into `timebase_init()`.
+
+---
+
+## tach.c / tach.h
+
+Interrupt-driven TACH (fan tachometer) input sensing with a simple glitch reject filter, plus optional periodic UART0 reporting.
+
+This implementation is intentionally “debug-first”: it is good enough to diagnose coupling/noise patterns and compare strategies against the ESP32 reference (`fan_master_s2_final.ino`), but it is not yet presented as a final/production tach algorithm.
+
+### Wiring and default pinning
+
+Default configuration (compile-time override via macros in [tach.h](../tach.h)):
+
+- TACH input: **PM3 / GPIOM3**
+- Electrical assumption: open-collector/open-drain tach output.
+- Uses internal weak pull-up (`GPIO_PIN_TYPE_STD_WPU`, to 3.3V).
+
+Safety note:
+
+- Do **not** pull the tach line up to +5V directly when connected to the TM4C.
+
+### `void tach_init(void)`
+
+---
+Initializes the GPIO and interrupt configuration for tach capture.
+
+- Configures pad:
+  - input, 2mA drive (irrelevant for input), weak pull-up
+- Configures interrupt:
+  - falling-edge trigger (`GPIO_FALLING_EDGE`)
+  - clears and enables pin interrupt
+  - enables the NVIC interrupt (`IntEnable(TACH_GPIO_INT)`)
+- Resets internal counters and state:
+  - `g_tach_pulses`, `g_tach_rejects`, `g_last_edge_cycles`
+  - reporting disabled
+
+### `void GPIOMIntHandler(void)`
+
+GPIO interrupt handler that counts tach pulses.
+
+- Interrupt status is read and cleared first.
+- For each falling edge on `TACH_GPIO_PIN`:
+  - snapshots a timestamp via `timebase_cycles32()`
+  - computes `delta = now - g_last_edge_cycles`
+  - applies **minimum-edge-spacing reject**:
+    - converts `TACH_MIN_EDGE_US` to cycles using `timebase_sysclk_hz()`
+    - if `delta < min_cycles`: increments `g_tach_rejects` and ignores the edge
+    - else: updates `g_last_edge_cycles` and increments `g_tach_pulses`
+
+Glitch reject rationale:
+
+- The project PWM is ~21.5kHz (period ~46.5µs). A `TACH_MIN_EDGE_US` default of **200µs** rejects most PWM-coupled “fake edges” on the tach line.
+- This is a diagnostic filter; it may need to change when we move to a period-based tach strategy like the ESP32 implementation.
+
+### `void tach_set_reporting(bool enabled)`
+
+Enables/disables periodic reporting to UART0.
+
+- When enabling:
+  - schedules first report at `now + 500ms`
+  - prints a one-time banner on UART0 with the active GPIO base/pin and configuration:
+    - `TACHIN ON: gpio_base=0x... pin_mask=0x... edge=FALL pullup=WPU`
+- When disabling:
+  - stops reporting
+  - resets counters (`pulses`, `rejects`, `last_edge_cycles`) under a global interrupt mask to simplify the next enable session
+
+Important interaction note:
+
+- Reporting writes to **UART0 directly** (ROM `UARTCharPut`) and is **not** gated by `DEBUG ON/OFF`.
+
+### `bool tach_is_reporting(void)`
+
+Returns whether periodic UART0 reporting is enabled.
+
+### `void tach_task(void)`
+
+Periodic task (called from the main loop) that emits RPM diagnostics every 0.5s when enabled.
+
+- Every 500ms:
+  - atomically snapshots and clears `g_tach_pulses` and `g_tach_rejects`
+  - computes an implied RPM using the current simplified model:
+
+$$
+RPM = 60 \cdot pulses_{0.5s}
+$$
+
+This comes from:
+
+- Window = 0.5s
+- pulses/sec = `2 * pulses_in_window`
+- For a 2-pulses-per-rev fan: `RPM = (pulses/sec) * 30 = 60 * pulses_in_window`
+
+- Prints one line on UART0:
+  - `TACH pulses=<n> rejects=<n> rpm=<n>`
+
+### Compile-time configuration knobs
+
+These can be overridden at build time (e.g. via `-D...`):
+
+- `TACH_GPIO_PERIPH`, `TACH_GPIO_BASE`, `TACH_GPIO_PIN`, `TACH_GPIO_INT`
+- `TACH_MIN_EDGE_US` (default 200)
+
+### Known limitations (current diagnostic implementation)
+
+- Counter-based windowing is sensitive to noise bursts; the `rejects` counter helps quantify that noise.
+- Using a weak internal pull-up may be too susceptible on long wires / noisy grounds; external conditioning may be required.
+- The current RPM conversion assumes 2 pulses/rev and a stable 0.5s window.
+
+- The current RPM conversion assumes 2 pulses/rev and a stable 0.5s window.
+
+Practical debug tip:
+
+- Use `PSYN OFF` to force PF2 low and reduce PWM coupling while observing the tach signal and `rejects` behavior.
+
+### ESP32 reference guidance (for next tach algorithm iterations)
+
+The ESP32 reference sketch (`fan_master_s2_final.ino`) uses a different strategy than the current TM4C implementation:
+
+- ISR captures **period between edges** using `micros()` (stores `lastPeriod_us` and a `newTachMeasurement` flag).
+- Main loop consumes that snapshot and computes:
+  - `freq = 1e6 / period_us`
+  - `RPM = (freq * 60) / PULSES_PER_REV`
+
+This style is often more robust than “count pulses in a fixed window” when noise bursts are present, because you can qualify each edge-to-edge measurement and discard outliers without corrupting the whole window.
+
+Concrete candidates to port into the TM4C path (still diagnostic/experimental until validated on the bench):
+
+- **Hybrid measurement**: keep `pulses/rejects` window counters, but also track `last_period_us` (or `last_period_cycles`) from accepted edges.
+- **Edge qualification**: require both a minimum edge spacing *and* a plausible period range (min/max RPM bounds) before accepting a new period.
+- **Timeout-to-zero**: if no accepted edge arrives for a configurable time (e.g. 2–3 periods at min RPM), treat RPM as 0 or “stale”.
+- **Filtering**: apply a small moving average or median-of-3 over recent periods (or RPM) to reject sporadic glitches.
+- **Expose tuning knobs**: make the key thresholds runtime-tunable via UART3 commands (e.g. `TACHMINUS <us>`, `TACHMAXRPM <n>`, `TACHTMO <ms>`), so lab work doesn’t require rebuilds.
+
+Notes observed in the ESP32 sketch worth mirroring during diagnostics:
+
+- It uses a controlled “fake tach generator” with ~120µs low pulses to validate the algorithm path.
+- It clamps commanded/target RPM to a safe min/max range (useful for sanity bounds during testing).
 
 ---
 
