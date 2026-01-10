@@ -1,0 +1,13 @@
+# Alternative udev rule for TI/Luminary Micro ICDI
+# Device: 1cbe:00fd "Luminary Micro Inc. In-Circuit Debug Interface"
+#
+# NOTE: This rule uses very permissive MODE=0666.
+# Prefer tools/udev/49-lm4flash-icdi.rules if possible.
+#
+# Install:
+#   sudo cp tools/udev/99-icdi.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+#   (unplug/replug the LaunchPad)
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="1cbe", ATTR{idProduct}=="00fd", MODE="0666", GROUP="plugdev", TAG+="uaccess"

@@ -14,6 +14,12 @@ Your TM4C1294XL ICDI shows up as:
 sudo cp tools/udev/49-lm4flash-icdi.rules /etc/udev/rules.d/
 ```
 
+If your distro’s udev policy/group setup still prevents access, there is a more permissive fallback rule you can try (use only for troubleshooting):
+
+```bash
+sudo cp tools/udev/99-icdi.rules /etc/udev/rules.d/
+```
+
 2) Reload udev rules and re-trigger:
 
 ```bash
