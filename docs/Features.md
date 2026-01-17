@@ -300,11 +300,25 @@ static uint32_t g_ui32CmdIdx = 0;
 
 - `PSYN n` (n = 5..96): Set PWM duty cycle
 - `PSYN ON|OFF`: Enable PWM output / disable PWM and force PF2 low
-- `TSYN ON|OFF`: Start/stop driving PM3 with a bursty tach-synth waveform (disables tach capture while ON)
+
+- `PHASE1/2/1L/2L` (and `PHASE 1/2/1L/2L` aliases): Apply fixed PWM + TACHSYN presets
+- `TSYN BOOT BEGIN|END`: Start/stop boot-profile TACHSYN on PM3
+- `TSYN COPY BEGIN|END`: Mirror TACHIN -> TACHOUT (PF1 -> PM3)
+- `TSYN STATUS`: Show tach generator status
+
 - `TACHIN ON|OFF`: Start/stop printing tach-derived RPM on UART0
+- `PWMIN ON|OFF`: Start/stop printing PWM-in frequency+duty on UART0 (1Hz)
+- `PWMINDBG ON|OFF|DUMP`: Enable/disable/dump verbose PWMIN diagnostics
+
+- `TACH LOOPBACK BEGIN|END`: Self-test mode (jumper PM3->PF1)
+- `TACH DEFAULT <1|2|1L|2L|BOOT|COPY>` and `TACH DEFAULT CURRENT`: Persist/inspect boot default
+
+- `CLEAR`: Clear terminal screen (ANSI)
 - `HELP`: Show command help
 - `DEBUG ON|OFF`: Enable/disable UART0 diagnostics output
-- `EXIT`: Close the current UART3 session (no arguments; errors if any are provided)
+- `EXIT`: Close the current UART3 session
+
+Note: `TSYN ON|OFF` remains as a deprecated compatibility alias for `TSYN BOOT BEGIN|END`.
 
 ##### PSYN Command
 - **Syntax**: `PSYN n` (where n = 5 to 96)

@@ -198,18 +198,46 @@ Parses and executes one complete command line.
 
 - Trims leading whitespace.
 - Uppercases command token.
-- Supported commands:
- 
-  - `PSYN n` — sets PWM duty (5..96).
-  - `PSYN ON` — enables PWM on PF2.
-  - `PSYN OFF` — disables PWM and forces PF2 low.
-  - `TACHIN ON` — start printing tach/RPM lines on UART0 every 0.5s.
-  - `TACHIN OFF` — stop printing tach/RPM lines on UART0.
-  - `HELP` — prints help.
-  - `DEBUG ON|OFF` — gates UART0 diagnostics.
-  - `EXIT` — closes the current UART3 session (no arguments).
-  - `TSYN ON` — enable TACH synthesizer on PM3 (drives burst waveform).
-  - `TSYN OFF` — disable TACH synthesizer (restores PM3 to tach input).
+- Supported commands (authoritative list: mirrors the `HELP` output in `commands.c`):
+
+  - `PSYN n` — set PWM duty (n=5..96).
+  - `PSYN ON` — enable PWM on PF2.
+  - `PSYN OFF` — disable PWM and force PF2 low.
+
+  - `PHASE1` / `PHASE 1` — preset: PWM 24.9kHz@46% + TACHSYN 168Hz@50% on PM3.
+  - `PHASE2` / `PHASE 2` — preset: PWM 24.9kHz@54% + TACHSYN 235Hz@50% on PM3.
+  - `PHASE1L` / `PHASE 1L` — preset: PWM 24.9kHz@15% + TACHSYN 168Hz@50% on PM3.
+  - `PHASE2L` / `PHASE 2L` — preset: PWM 24.9kHz@21% + TACHSYN 235Hz@50% on PM3.
+
+  - `TSYN BOOT BEGIN` — start boot-profile TACHSYN on PM3.
+  - `TSYN BOOT END` — stop boot-profile.
+  - `TSYN COPY BEGIN` — mirror TACHIN -> TACHOUT (PF1 -> PM3).
+  - `TSYN COPY END` — stop mirroring and restore the persisted `TACH DEFAULT`.
+  - `TSYN STATUS` — show tach generator status.
+
+  - `TACHIN ON` — start printing RPM on UART0 every 0.5s.
+  - `TACHIN OFF` — stop printing RPM on UART0.
+
+  - `PWMIN ON` — start printing PWM-in on UART0 every 1s (frequency + duty only).
+  - `PWMIN OFF` — stop printing PWM-in on UART0.
+  - `PWMINDBG ON` — enable PWMIN verbose diagnostics on UART0.
+  - `PWMINDBG OFF` — disable PWMIN verbose diagnostics.
+  - `PWMINDBG DUMP` — print a one-time PWMIN diagnostic dump on UART0.
+
+  - `TACH LOOPBACK BEGIN` — self-test (jumper PM3->PF1).
+  - `TACH LOOPBACK END` — stop self-test and restore `TACH DEFAULT`.
+  - `TACH DEFAULT <1|2|1L|2L|BOOT|COPY>` — persist boot default.
+  - `TACH DEFAULT CURRENT` — show persisted default.
+
+  - `CLEAR` — clear terminal screen (ANSI).
+  - `HELP` — print help.
+  - `EXIT` — close UART3 session.
+  - `DEBUG ON` — enable UART0 diagnostics.
+  - `DEBUG OFF` — disable UART0 diagnostics.
+
+Deprecated compatibility aliases:
+
+  - `TSYN ON` / `TSYN OFF` — legacy aliases retained for compatibility (maps to `TSYN BOOT BEGIN/END`).
 
 ### `void pwm_set_percent(uint32_t percent)` (declared in commands.h)
 
