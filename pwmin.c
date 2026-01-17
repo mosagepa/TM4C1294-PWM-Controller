@@ -86,6 +86,13 @@ static void uart0_puts(const char *s)
     }
 }
 
+static void uart0_put_u32_1dp(uint32_t value_x10)
+{
+    uart0_put_u32(value_x10 / 10U);
+    uart0_puts(".");
+    uart0_put_u32(value_x10 % 10U);
+}
+
 static void uart0_put_u32(uint32_t v)
 {
     char buf[11];
@@ -599,21 +606,27 @@ void pwmin_task(void)
     IntMasterEnable();
 
     uint32_t freq = 0U;
-    uint32_t duty = 0U;
+    uint32_t duty_x10 = 0U;
+    uint32_t freq_x10 = 0U;
     if (have_period && have_high && period != 0U) {
         freq = g_sysclk_hz / period;
-        duty = (high * 100U) / period;
+        duty_x10 = (uint32_t)((((uint64_t)high * 1000ULL) + ((uint64_t)period / 2ULL)) / (uint64_t)period);
+        freq_x10 = (uint32_t)((((uint64_t)g_sysclk_hz * 10ULL) + ((uint64_t)period / 2ULL)) / (uint64_t)period);
     }
 
     uart0_puts("PWMIN: f=");
     uart0_put_u32(freq);
     uart0_puts("Hz duty=");
-    uart0_put_u32(duty);
+    uart0_put_u32_1dp(duty_x10);
     uart0_puts("%\r\n");
 
     /* Preserve the useful debug counters, but only in verbose mode. */
     if (g_pwmin_verbose) {
-        uart0_puts("PWMIN DBG: period_cycles=");
+        uart0_puts("PWMIN DBG: f=");
+        uart0_put_u32_1dp(freq_x10);
+        uart0_puts("Hz duty=");
+        uart0_put_u32_1dp(duty_x10);
+        uart0_puts("% period_cycles=");
         uart0_put_u32(period);
         uart0_puts(" high_cycles=");
         uart0_put_u32(high);

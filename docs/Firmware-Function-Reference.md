@@ -427,7 +427,7 @@ Board note (TI TM4C1294 Connected LaunchPad, per `spmu365c.pdf`):
 ### Commands
 
 - `PWMIN ON`: enables capture + prints one line every **1s** on UART0 (ICDI):
-  - `PWMIN: f=<Hz>Hz duty=<pct>%`
+  - `PWMIN: f=<Hz>Hz duty=<pct.t>%` (duty shown with **0.1%** resolution)
 - `PWMIN OFF`: stops the periodic printing
 - `PWMINDBG ON`: enables verbose diagnostics to UART0 and prints a diagnostic dump
 - `PWMINDBG OFF`: disables verbose diagnostics
@@ -462,8 +462,12 @@ The fallback path uses the system cycle timebase (`timebase_cycles32()`) as a ti
 
 Computed outputs:
 
-- Frequency (Hz): `f = sysclk_hz / period_cycles`
-- Duty (%): `duty = 100 * high_cycles / period_cycles`
+- Normal display frequency (Hz): `f = sysclk_hz / period_cycles` (integer Hz)
+- Normal display duty (0.1%): `duty_x10 = round(1000 * high_cycles / period_cycles)` then print as `duty_x10/10`
+
+When verbose mode is enabled (`PWMINDBG ON`), an extra debug line is printed each second that includes **0.1 Hz** resolution:
+
+- Debug display frequency (0.1 Hz): `f_x10 = round(10 * sysclk_hz / period_cycles)` then print as `f_x10/10`
 
 This produces correct results for the project’s ~24.9kHz PWM, and it avoids relying on a specific timer capture mux/capture behavior.
 
@@ -478,6 +482,10 @@ This produces correct results for the project’s ~24.9kHz PWM, and it avoids re
 ### Diagnostic mode
 
 The debug prints used to diagnose capture failures are preserved, but are **gated behind `PWMINDBG`** so normal `PWMIN` output stays clean.
+
+With `PWMINDBG ON`, the 1 Hz reporting includes an additional line like:
+
+- `PWMIN DBG: f=<Hz.t>Hz duty=<pct.t>% period_cycles=<n> high_cycles=<n> edges=<n>`
 
 ---
 
