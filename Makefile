@@ -186,3 +186,14 @@ auto: flash
 	python3 tools/uart_session.py --uart0 "$(UART0_DEV)" --uart0-baud $(UART0_BAUD) --uart3 "$(UART3_DEV)" --uart3-baud $(UART3_BAUD) --duration $${DURATION:-10} $(if $(CMD),--send-uart3 "$(CMD)",)
 	@echo "AUTO FLOW: SUCCESS (build+flash+uart)"
 
+
+# Remote autotest (runs from this dev PC; flashes + tests on dijkstra via ssh)
+# Default behavior builds locally (so dijkstra does NOT need arm-none-eabi-gcc).
+# Examples:
+#   make remote-auto
+#   DIJKSTRA_HOST=mosagepa@dijkstra make remote-auto
+#   DIJKSTRA_DIR=~/integr_v03 make remote-auto
+#   NO_FLASH=1 make remote-auto
+remote-auto:
+	tools/remote_dijkstra_autotest.sh
+

@@ -1,0 +1,624 @@
+#include "pwmin.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "inc/hw_ints.h"
+#include "inc/hw_memmap.h"
+#include "inc/hw_nvic.h"
+#include "inc/hw_types.h"
+#include "inc/hw_gpio.h"
+
+#include "driverlib/gpio.h"
+#include "driverlib/interrupt.h"
+#include "driverlib/pin_map.h"
+#include "driverlib/sysctl.h"
+#include "driverlib/timer.h"
+#include "driverlib/rom.h"
+
+#include "timebase.h"
+
+/* PWMIN capture pinning:
+ *   PF3 / T1CCP1 -> Timer1B capture
+ */
+
+/* PF3 / T1CCP1 -> Timer1B capture. */
+#define PWMIN_GPIO_PERIPH SYSCTL_PERIPH_GPIOF
+#define PWMIN_GPIO_BASE   GPIO_PORTF_BASE
+#define PWMIN_GPIO_PIN    GPIO_PIN_3
+
+#define PWMIN_TIMER_PERIPH SYSCTL_PERIPH_TIMER1
+#define PWMIN_TIMER_BASE   TIMER1_BASE
+#define PWMIN_TIMER        TIMER_B
+#define PWMIN_INT          INT_TIMER1B
+#define PWMIN_INT_FLAG     TIMER_CAPB_EVENT
+
+#define PWMIN_PINNAME_STR  "PF3/T1CCP1 (Timer1B CAP_TIME_UP)"
+
+/* Some environments in this workspace have incomplete/mismatched pin-map
+    visibility. To avoid relying on GPIO_PF3_T1CCP1, we can auto-detect the
+    correct PF3 PCTL nibble by scanning for a value that produces Timer1B
+    capture events while PF3 is toggling.
+    Default guess is 0x7 (commonly used for T1CCP1 on TM4C1294). */
+static uint8_t g_pwmin_pf3_pctl_nibble = 0x7U;
+
+static volatile bool g_pwmin_enabled = false;
+static volatile bool g_pwmin_reporting = false;
+
+static volatile bool g_pwmin_verbose = false;
+
+static uint32_t g_sysclk_hz = 0;
+
+/* ISR-updated capture state (16-bit timer deltas are sufficient at 24.9kHz). */
+static volatile uint32_t g_last_rise = 0;
+static volatile bool g_have_rise = false;
+static volatile uint32_t g_last_period = 0;
+static volatile bool g_have_period = false;
+static volatile uint32_t g_last_high = 0;
+static volatile bool g_have_high = false;
+
+/* Edge classification: do not rely on GPIOPinRead() while the pin is in
+    alternate (timer) function mode. Instead, toggle the timer's capture event
+    between rising and falling edges.
+    true  => next capture expected on rising edge
+    false => next capture expected on falling edge
+*/
+static volatile bool g_expect_rising = true;
+
+static volatile uint32_t g_edge_count = 0;
+
+/* Fallback: use GPIOF interrupts on PF3 when timer capture cannot be made to work. */
+static volatile bool g_pwmin_gpio_capture = false;
+static volatile uint32_t g_last_rise_cycles32 = 0;
+static volatile bool g_have_rise32 = false;
+static volatile uint32_t g_last_period_cycles32 = 0;
+static volatile bool g_have_period32 = false;
+static volatile uint32_t g_last_high_cycles32 = 0;
+static volatile bool g_have_high32 = false;
+
+static uint32_t g_next_report_ms = 0;
+
+static void uart0_puts(const char *s)
+{
+    if (!s) return;
+    while (*s) {
+        ROM_UARTCharPut(UART0_BASE, *s++);
+    }
+}
+
+static void uart0_put_u32(uint32_t v)
+{
+    char buf[11];
+    uint32_t n = v;
+    uint32_t i = 0;
+
+    do {
+        buf[i++] = (char)('0' + (n % 10U));
+        n /= 10U;
+    } while (n != 0U && i < sizeof(buf));
+
+    while (i > 0) {
+        ROM_UARTCharPut(UART0_BASE, buf[--i]);
+    }
+}
+
+static void pwmin_quick_gpio_probe(uint32_t probe_us)
+{
+    if (!g_pwmin_verbose) return;
+    if (g_sysclk_hz == 0) return;
+
+    /* Temporarily sample PF3 as a plain GPIO input to confirm the pin is
+       physically toggling (helps diagnose wiring vs capture config).
+       This runs only once when PWMIN reporting is enabled. */
+    GPIOPinTypeGPIOInput(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN);
+    GPIOPadConfigSet(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD);
+
+    const uint32_t start = timebase_cycles32();
+    const uint32_t cycles_target = (g_sysclk_hz / 1000000U) * (probe_us ? probe_us : 1U);
+
+    uint32_t transitions = 0;
+    bool any_high = false;
+    uint32_t prev = (GPIOPinRead(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN) != 0) ? 1U : 0U;
+
+    while ((uint32_t)(timebase_cycles32() - start) < cycles_target) {
+        uint32_t cur = (GPIOPinRead(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN) != 0) ? 1U : 0U;
+        if (cur != prev) {
+            transitions++;
+            prev = cur;
+        }
+        if (cur) any_high = true;
+    }
+
+    uart0_puts("PWMIN PROBE: transitions=");
+    uart0_put_u32(transitions);
+    uart0_puts(" high_seen=");
+    uart0_puts(any_high ? "1" : "0");
+    uart0_puts(" (PF3 GPIO for ");
+    uart0_put_u32(probe_us);
+    uart0_puts("us)\r\n");
+}
+
+static void pwmin_pf3_set_pctl_nibble(uint8_t nibble)
+{
+    const uint32_t shift = 3U * 4U;
+    uint32_t pctl = HWREG(PWMIN_GPIO_BASE + GPIO_O_PCTL);
+    pctl &= ~(0xFU << shift);
+    pctl |= ((uint32_t)(nibble & 0xFU) << shift);
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_PCTL) = pctl;
+}
+
+static uint8_t pwmin_detect_pf3_pctl_nibble(void)
+{
+    /* PF3 should already be physically toggling (validated by GPIO probe). */
+
+    SysCtlPeripheralEnable(PWMIN_GPIO_PERIPH);
+    while (!SysCtlPeripheralReady(PWMIN_GPIO_PERIPH)) { }
+    SysCtlPeripheralEnable(PWMIN_TIMER_PERIPH);
+    while (!SysCtlPeripheralReady(PWMIN_TIMER_PERIPH)) { }
+
+    /* Prepare PF3 for alternate function + digital input. */
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_AFSEL) |= PWMIN_GPIO_PIN;
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_DEN) |= PWMIN_GPIO_PIN;
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_AMSEL) &= ~PWMIN_GPIO_PIN;
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_DIR) &= ~PWMIN_GPIO_PIN;
+
+    /* Configure Timer1B capture (no NVIC interrupts needed for detection). */
+    TimerDisable(PWMIN_TIMER_BASE, PWMIN_TIMER);
+    TimerConfigure(PWMIN_TIMER_BASE, TIMER_CFG_SPLIT_PAIR | TIMER_CFG_B_CAP_TIME_UP);
+    TimerControlEvent(PWMIN_TIMER_BASE, PWMIN_TIMER, TIMER_EVENT_POS_EDGE);
+    TimerLoadSet(PWMIN_TIMER_BASE, PWMIN_TIMER, 0xFFFFU);
+
+    /* Scan mux values 1..15 and look for CAPB events in raw status. */
+    for (uint8_t nib = 1U; nib <= 15U; nib++) {
+        pwmin_pf3_set_pctl_nibble(nib);
+
+        TimerIntClear(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+        TimerEnable(PWMIN_TIMER_BASE, PWMIN_TIMER);
+
+        /* Wait ~0.5ms (should include many edges at ~25kHz). */
+        if (g_sysclk_hz) {
+            const uint32_t loops = (g_sysclk_hz / 3000000U) * 500U;
+            SysCtlDelay(loops ? loops : 1U);
+        } else {
+            SysCtlDelay(20000U);
+        }
+
+        const uint32_t raw = TimerIntStatus(PWMIN_TIMER_BASE, true);
+        TimerDisable(PWMIN_TIMER_BASE, PWMIN_TIMER);
+
+        if (raw & PWMIN_INT_FLAG) {
+            return nib;
+        }
+    }
+
+    return 0x7U;
+}
+
+static void pwmin_quick_capture_probe(uint32_t wait_us)
+{
+    if (!g_pwmin_verbose) return;
+    if (g_sysclk_hz == 0) return;
+
+    /* Wait a short time for capture interrupts to arrive. */
+    uint32_t loops = (g_sysclk_hz / 3000000U) * (wait_us ? wait_us : 1U);
+    if (loops == 0) loops = 1;
+    SysCtlDelay(loops);
+
+    uint32_t edges;
+    IntMasterDisable();
+    edges = g_edge_count;
+    IntMasterEnable();
+
+    /* TivaWare INT_* values match the vector-table index.
+       NVIC enable bits use IRQ numbers (vector-16). */
+    const int32_t intnum = (int32_t)PWMIN_INT;
+    const int32_t irq = intnum - 16;
+    uint32_t nvic_enabled = 0;
+    if (irq >= 0) {
+        const uint32_t reg_index = ((uint32_t)irq) >> 5;
+        const uint32_t bit = 1UL << (((uint32_t)irq) & 31U);
+        const uint32_t en_reg = HWREG(NVIC_EN0 + (reg_index * 4U));
+        nvic_enabled = (en_reg & bit) ? 1U : 0U;
+    }
+
+    const uint32_t tis_raw = TimerIntStatus(PWMIN_TIMER_BASE, true);
+    const uint32_t tis_masked = TimerIntStatus(PWMIN_TIMER_BASE, false);
+
+    uart0_puts("PWMIN CAPTURE: nvic_en=");
+    uart0_put_u32(nvic_enabled);
+    uart0_puts(" int=");
+    uart0_put_u32((uint32_t)intnum);
+    uart0_puts(" irq=");
+    uart0_put_u32((irq >= 0) ? (uint32_t)irq : 0U);
+    uart0_puts(" raw=");
+    uart0_put_u32(tis_raw);
+    uart0_puts(" masked=");
+    uart0_put_u32(tis_masked);
+    uart0_puts(" edges_seen=");
+    uart0_put_u32(edges);
+    uart0_puts(" (after ");
+    uart0_put_u32(wait_us);
+    uart0_puts("us)\r\n");
+}
+
+static void pwmin_gpio_capture_enable(void)
+{
+    /* Configure PF3 as GPIO input + both-edge interrupt. */
+    SysCtlPeripheralEnable(PWMIN_GPIO_PERIPH);
+    while (!SysCtlPeripheralReady(PWMIN_GPIO_PERIPH)) { }
+
+    /* Ensure GPIO mode on PF3. */
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_AFSEL) &= ~PWMIN_GPIO_PIN;
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_PCTL) &= ~(0xFU << (3U * 4U));
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_DEN) |= PWMIN_GPIO_PIN;
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_AMSEL) &= ~PWMIN_GPIO_PIN;
+    HWREG(PWMIN_GPIO_BASE + GPIO_O_DIR) &= ~PWMIN_GPIO_PIN;
+    GPIOPadConfigSet(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD);
+
+    GPIOIntDisable(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN);
+    GPIOIntClear(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN);
+    GPIOIntTypeSet(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN, GPIO_BOTH_EDGES);
+    GPIOIntEnable(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN);
+
+    /* Ensure the port interrupt is enabled at NVIC. (tach_init already does this.) */
+    IntEnable(INT_GPIOF);
+
+    g_last_rise_cycles32 = 0;
+    g_have_rise32 = false;
+    g_last_period_cycles32 = 0;
+    g_have_period32 = false;
+    g_last_high_cycles32 = 0;
+    g_have_high32 = false;
+
+    g_pwmin_gpio_capture = true;
+}
+
+void pwmin_set_verbose(bool enabled)
+{
+    g_pwmin_verbose = enabled;
+}
+
+bool pwmin_is_verbose(void)
+{
+    return g_pwmin_verbose;
+}
+
+void pwmin_debug_dump(void)
+{
+    uart0_puts("PWMIN DBG: enabled=");
+    uart0_puts(g_pwmin_enabled ? "1" : "0");
+    uart0_puts(" reporting=");
+    uart0_puts(g_pwmin_reporting ? "1" : "0");
+    uart0_puts(" mode=");
+    if (g_pwmin_enabled) {
+        uart0_puts(g_pwmin_gpio_capture ? "GPIOF" : "TIMER1B");
+    } else {
+        uart0_puts("OFF");
+    }
+    uart0_puts(" pf3_pctl_nibble=");
+    uart0_put_u32((uint32_t)g_pwmin_pf3_pctl_nibble);
+    uart0_puts("\r\n");
+
+    /* Avoid reconfiguring PF3 while capture is running.
+       The probe/mux scan temporarily forces PF3 to GPIO/AF, so only do those
+       when capture is currently disabled. */
+    if (!g_pwmin_enabled) {
+        SysCtlPeripheralEnable(PWMIN_GPIO_PERIPH);
+        while (!SysCtlPeripheralReady(PWMIN_GPIO_PERIPH)) { }
+
+        pwmin_quick_gpio_probe(2000U);
+        g_pwmin_pf3_pctl_nibble = pwmin_detect_pf3_pctl_nibble();
+        uart0_puts("PWMIN MUX: PF3 PCTL nibble=");
+        uart0_put_u32((uint32_t)g_pwmin_pf3_pctl_nibble);
+        uart0_puts("\r\n");
+        return;
+    }
+
+    if (!g_pwmin_gpio_capture) {
+        pwmin_quick_capture_probe(10000U);
+    } else {
+        uart0_puts("PWMIN NOTE: GPIO fallback active; timer-capture probe not applicable\r\n");
+    }
+}
+
+static void pwmin_gpio_capture_disable(void)
+{
+    GPIOIntDisable(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN);
+    GPIOIntClear(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN);
+    g_pwmin_gpio_capture = false;
+}
+
+void pwmin_gpiof_isr(uint32_t gpiof_status)
+{
+    (void)gpiof_status;
+    if (!g_pwmin_enabled || !g_pwmin_gpio_capture) return;
+
+    /* GPIOF interrupt is already cleared by the port ISR; just process state. */
+    const uint32_t now = timebase_cycles32();
+    const bool level_high = (GPIOPinRead(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN) != 0);
+
+    g_edge_count++;
+
+    if (level_high) {
+        if (g_have_rise32) {
+            g_last_period_cycles32 = now - g_last_rise_cycles32;
+            g_have_period32 = (g_last_period_cycles32 != 0U);
+        }
+        g_last_rise_cycles32 = now;
+        g_have_rise32 = true;
+        return;
+    }
+
+    if (g_have_rise32) {
+        g_last_high_cycles32 = now - g_last_rise_cycles32;
+        g_have_high32 = true;
+    }
+}
+
+static void pwmin_isr(void)
+{
+    TimerIntClear(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+
+    const uint32_t now = TimerValueGet(PWMIN_TIMER_BASE, PWMIN_TIMER) & 0xFFFFU;
+
+    g_edge_count++;
+
+    if (g_expect_rising) {
+        if (g_have_rise) {
+            g_last_period = (now - g_last_rise) & 0xFFFFU;
+            g_have_period = (g_last_period != 0U);
+        }
+        g_last_rise = now;
+        g_have_rise = true;
+
+        g_expect_rising = false;
+        TimerControlEvent(PWMIN_TIMER_BASE, PWMIN_TIMER, TIMER_EVENT_NEG_EDGE);
+        return;
+    }
+
+    /* Falling edge: high time since last rise. */
+    if (g_have_rise) {
+        g_last_high = (now - g_last_rise) & 0xFFFFU;
+        g_have_high = true;
+    }
+
+    g_expect_rising = true;
+    TimerControlEvent(PWMIN_TIMER_BASE, PWMIN_TIMER, TIMER_EVENT_POS_EDGE);
+}
+
+/* Provide both handlers so the startup vector table can safely point to
+   either timer without link errors. Only the enabled timer will actually
+   generate interrupts. */
+void Timer1BIntHandler(void)
+{
+    pwmin_isr();
+}
+
+static void pwmin_hw_enable(void)
+{
+    SysCtlPeripheralEnable(PWMIN_GPIO_PERIPH);
+    while (!SysCtlPeripheralReady(PWMIN_GPIO_PERIPH)) { }
+
+    SysCtlPeripheralEnable(PWMIN_TIMER_PERIPH);
+    while (!SysCtlPeripheralReady(PWMIN_TIMER_PERIPH)) { }
+
+     /* Force PF3 -> (detected) timer capture function via GPIO mux registers.
+         Also force PF3 direction to INPUT (capture) explicitly. */
+     pwmin_pf3_set_pctl_nibble(g_pwmin_pf3_pctl_nibble);
+     HWREG(PWMIN_GPIO_BASE + GPIO_O_AFSEL) |= PWMIN_GPIO_PIN;
+     HWREG(PWMIN_GPIO_BASE + GPIO_O_DEN) |= PWMIN_GPIO_PIN;
+
+     /* Ensure digital input path. */
+     HWREG(PWMIN_GPIO_BASE + GPIO_O_AMSEL) &= ~PWMIN_GPIO_PIN;
+     HWREG(PWMIN_GPIO_BASE + GPIO_O_DIR) &= ~PWMIN_GPIO_PIN;
+
+    GPIOPadConfigSet(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD);
+
+    TimerDisable(PWMIN_TIMER_BASE, PWMIN_TIMER);
+    TimerConfigure(PWMIN_TIMER_BASE, TIMER_CFG_SPLIT_PAIR | TIMER_CFG_B_CAP_TIME_UP);
+    TimerControlEvent(PWMIN_TIMER_BASE, PWMIN_TIMER, TIMER_EVENT_POS_EDGE);
+
+    /* 16-bit up-counter wraps at 0xFFFF; period/high deltas are far below that at ~25kHz. */
+    TimerLoadSet(PWMIN_TIMER_BASE, PWMIN_TIMER, 0xFFFFU);
+
+    TimerIntDisable(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+    TimerIntClear(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+    TimerIntEnable(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+
+    IntDisable(PWMIN_INT);
+    IntEnable(PWMIN_INT);
+
+    TimerEnable(PWMIN_TIMER_BASE, PWMIN_TIMER);
+
+    g_last_rise = 0;
+    g_have_rise = false;
+    g_last_period = 0;
+    g_have_period = false;
+    g_last_high = 0;
+    g_have_high = false;
+    g_edge_count = 0;
+    g_expect_rising = true;
+
+    /* If timer capture isn't producing events, fall back to GPIO edge timing. */
+    if ((TimerIntStatus(PWMIN_TIMER_BASE, true) & PWMIN_INT_FLAG) == 0U) {
+        /* Give it a brief chance (~2ms). */
+        SysCtlDelay((g_sysclk_hz / 3000000U) * 2000U);
+    }
+    if ((TimerIntStatus(PWMIN_TIMER_BASE, true) & PWMIN_INT_FLAG) == 0U) {
+        TimerDisable(PWMIN_TIMER_BASE, PWMIN_TIMER);
+        TimerIntDisable(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+        TimerIntClear(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+        IntDisable(PWMIN_INT);
+
+        pwmin_gpio_capture_enable();
+        if (g_pwmin_verbose) {
+            uart0_puts("PWMIN NOTE: Timer1B capture not firing; using GPIOF PF3 BOTH_EDGES fallback\r\n");
+        }
+    } else {
+        g_pwmin_gpio_capture = false;
+    }
+
+    g_pwmin_enabled = true;
+}
+
+static void pwmin_hw_disable(void)
+{
+    IntDisable(PWMIN_INT);
+    TimerIntDisable(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+    TimerIntClear(PWMIN_TIMER_BASE, PWMIN_INT_FLAG);
+    TimerDisable(PWMIN_TIMER_BASE, PWMIN_TIMER);
+
+    pwmin_gpio_capture_disable();
+
+    /* Return PF3 to GPIO input (Hi-Z). */
+    GPIOPinTypeGPIOInput(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN);
+    GPIOPadConfigSet(PWMIN_GPIO_BASE, PWMIN_GPIO_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD);
+
+    g_pwmin_enabled = false;
+}
+
+void pwmin_init(uint32_t sysclk_hz)
+{
+    g_sysclk_hz = sysclk_hz;
+    g_pwmin_enabled = false;
+    g_pwmin_reporting = false;
+    g_next_report_ms = 0;
+}
+
+void pwmin_set_enabled(bool enabled)
+{
+    if (enabled) {
+        if (g_pwmin_enabled) return;
+        pwmin_hw_enable();
+        return;
+    }
+
+    if (!g_pwmin_enabled) return;
+    pwmin_hw_disable();
+}
+
+bool pwmin_is_enabled(void)
+{
+    return g_pwmin_enabled;
+}
+
+void pwmin_set_reporting(bool enabled)
+{
+    g_pwmin_reporting = enabled;
+    g_next_report_ms = timebase_millis() + 1000U;
+
+    if (enabled) {
+        /* In normal PWMIN mode we stay quiet. Any probe/mux/capture diagnostics
+           are requested explicitly via PWMINDBG (verbose). */
+
+        pwmin_set_enabled(true);
+
+        if (g_pwmin_verbose) {
+            uart0_puts("PWMIN ON: ");
+            uart0_puts(PWMIN_PINNAME_STR);
+            uart0_puts(g_pwmin_gpio_capture ? " [MODE=GPIOF]" : " [MODE=TIMER1B]");
+            uart0_puts("\r\n");
+        }
+        return;
+    }
+
+    if (g_pwmin_verbose) {
+        uart0_puts("PWMIN OFF\r\n");
+    }
+}
+
+bool pwmin_is_reporting(void)
+{
+    return g_pwmin_reporting;
+}
+
+bool pwmin_get_last(uint32_t *freq_hz_out, uint32_t *duty_percent_out)
+{
+    if (!freq_hz_out || !duty_percent_out) return false;
+
+    uint32_t period;
+    uint32_t high;
+    bool have_period;
+    bool have_high;
+
+    IntMasterDisable();
+    if (g_pwmin_gpio_capture) {
+        period = g_last_period_cycles32;
+        high = g_last_high_cycles32;
+        have_period = g_have_period32;
+        have_high = g_have_high32;
+    } else {
+        period = g_last_period;
+        high = g_last_high;
+        have_period = g_have_period;
+        have_high = g_have_high;
+    }
+    IntMasterEnable();
+
+    if (!have_period || !have_high || period == 0U) {
+        *freq_hz_out = 0;
+        *duty_percent_out = 0;
+        return false;
+    }
+
+    *freq_hz_out = (g_sysclk_hz / period);
+    *duty_percent_out = (high * 100U) / period;
+    return true;
+}
+
+void pwmin_task(void)
+{
+    if (!g_pwmin_reporting) return;
+
+    uint32_t now_ms = timebase_millis();
+    if ((int32_t)(now_ms - g_next_report_ms) < 0) {
+        return;
+    }
+    g_next_report_ms += 1000U;
+
+    uint32_t period;
+    uint32_t high;
+    uint32_t edges;
+    bool have_period;
+    bool have_high;
+
+    IntMasterDisable();
+    if (g_pwmin_gpio_capture) {
+        period = g_last_period_cycles32;
+        high = g_last_high_cycles32;
+        have_period = g_have_period32;
+        have_high = g_have_high32;
+    } else {
+        period = g_last_period;
+        high = g_last_high;
+        have_period = g_have_period;
+        have_high = g_have_high;
+    }
+    edges = g_edge_count;
+    g_edge_count = 0;
+    IntMasterEnable();
+
+    uint32_t freq = 0U;
+    uint32_t duty = 0U;
+    if (have_period && have_high && period != 0U) {
+        freq = g_sysclk_hz / period;
+        duty = (high * 100U) / period;
+    }
+
+    uart0_puts("PWMIN: f=");
+    uart0_put_u32(freq);
+    uart0_puts("Hz duty=");
+    uart0_put_u32(duty);
+    uart0_puts("%\r\n");
+
+    /* Preserve the useful debug counters, but only in verbose mode. */
+    if (g_pwmin_verbose) {
+        uart0_puts("PWMIN DBG: period_cycles=");
+        uart0_put_u32(period);
+        uart0_puts(" high_cycles=");
+        uart0_put_u32(high);
+        uart0_puts(" edges=");
+        uart0_put_u32(edges);
+        uart0_puts("\r\n");
+    }
+}

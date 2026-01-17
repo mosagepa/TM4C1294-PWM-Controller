@@ -124,10 +124,25 @@ typedef struct heap_block {
 ```
 
 #### Key Features
-- **Fixed Heap Size**: 8KB allocated at compile time
-- **First-Fit Algorithm**: Balanced between speed and fragmentation
-- **Coalescing**: Automatic adjacent block merging on free()
-- **Alignment**: 4-byte aligned allocations for ARM Cortex-M4 efficiency
+- **Fixed Heap Reservation (Linker)**: `.heap` is reserved in SRAM by `TM4C1294XL.ld` (currently 8KB)
+- **Allocator Behavior**: minimal `_sbrk`-backed bump allocator with a small per-block header
+- **free()**: no-op (does not reclaim memory)
+- **Alignment**: aligned allocations suitable for ARM Cortex-M4 toolchains
+
+#### SRAM Usage Reduction (Jan 2026)
+
+The project reduced the linker-reserved heap region to lower reported SRAM usage and
+leave additional guard space between heap growth and the stack-reserved top-of-SRAM area.
+
+- **Before**: `.heap` reserved ~22KB → linker reported ~75% SRAM used (in a 32KB SRAM window)
+- **After**: `.heap` reserved 8KB → linker reported ~31% SRAM used
+
+**Runtime impact**:
+- `malloc()`/`_sbrk()` can allocate only within the reserved heap size.
+- If heap demand exceeds the reserved size, allocations fail (errno `ENOMEM`).
+
+**How to verify**:
+- Run `arm-none-eabi-size -A integr_V03.axf` and check `.heap`, `.data`, `.bss` sizes.
 
 #### Performance Characteristics
 - **Allocation Time**: O(n) worst case, typically O(1) for repeated patterns

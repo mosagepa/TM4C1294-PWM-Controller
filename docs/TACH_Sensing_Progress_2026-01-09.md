@@ -43,7 +43,7 @@ Mitigation implemented:
 - ISR-level **minimum edge spacing** filter.
 - Any edge arriving closer than `TACH_MIN_EDGE_US` (default 200µs) is rejected and counted in `rejects`.
 
-This should suppress coupling from the ~21.5kHz PWM regime (period ~46µs).
+This should suppress coupling from the ~24.9kHz PWM regime (period ~40µs).
 
 ## Files and integration points
 
@@ -75,6 +75,21 @@ This should suppress coupling from the ~21.5kHz PWM regime (period ~46µs).
   - Remove +5V pull-up
   - Use internal WPU (3.3V) or add external pull-up to **3.3V** (often stronger than internal)
 
+Important measurement note (DMM averaging):
+
+- A DMM reading near ~1.65V on a running tach line does **not** prove the pull-up rail is 3.3V.
+- For a 0↔3.3V waveform at 50% duty, the average is ~1.65V, but other combinations can yield similar averages.
+- To identify the pull-up rail, use a scope (DC-coupled) and read the actual **Vhigh** of the tach line.
+
+### 1b) Safe interface to an unknown pull-up rail
+
+If the PSU tach input might be pulled up to +5V (or uses an “active pull-up”), the safest interface is an external open-collector stage:
+
+- 2N3904 (or similar NPN) as open-collector: emitter→GND, collector→PSU tach input, PSU pull-up left as-is.
+- Base driven from the TM4C GPIO through a resistor (typ. 2.2k–4.7k), plus a weak base-emitter pulldown (47k–100k).
+
+This keeps the TM4C pin isolated from the PSU pull-up voltage and still presents the PSU with a fan-like “sink-to-ground” tach signal.
+
 ### 2) EMI coupling from PWM
 
 - PWM at ~21.5kHz can capacitively/inductively couple into a high-impedance open-collector tach line.
@@ -103,6 +118,18 @@ Expected qualitative behaviors:
 
 New lab notes (2026-01-10) indicate the physical IBM PS tach line is *bursty* (bursts of ~21.5kHz pulses followed by a low tail), which can alias badly with naive fixed-window counting.
 See: [LEEME_MOSA_TACH_ANALYSIS.TXT](../LEEME_MOSA_TACH_ANALYSIS.TXT)
+
+### IBM boot-time tach expectation (observed)
+
+Later lab work (2026-01-11) observed an additional “expected tach behavior” sequence during cold AC-power boot, likely used by the server/PSU to validate fan presence.
+
+All values below are approximate and should be treated as a working hypothesis until re-captured and confirmed:
+
+- ~0 to 4.5s: tach frequency transitions from ~60Hz down to ~50Hz (50% duty)
+- ~4.5 to 7s: tach holds near ~50Hz (50% duty)
+- ~17 to 28s: tach ramps from ~50Hz up to ~168Hz (50% duty)
+
+This sequence is distinct from the later steady-state “phase 1” (~168Hz) and “phase 2” (~235–236Hz) regimes.
 
 ### Plan (based on lab notes)
 

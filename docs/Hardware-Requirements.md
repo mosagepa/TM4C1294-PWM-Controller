@@ -68,7 +68,7 @@ EEPROM:         0x400AF000 - 0x400AFFFF (6 KB)
 
 #### Supply Specifications
 - **Operating Voltage**: 3.3V nominal (3.0V to 3.6V range)
-- **I/O Voltage**: 3.3V (5V tolerant on selected pins)
+- **I/O Voltage**: 3.3V (some devices/pins may be 5V tolerant on *inputs*; treat pins as 3.3V unless verified)
 - **Power Consumption**: 
   - Active mode (120 MHz): ~140 mA typical
   - Sleep mode: < 1 mA
@@ -104,7 +104,7 @@ SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN |
 - **Total GPIO Pins**: 90 pins across Ports A-Q
 - **Drive Strength**: 2mA, 4mA, 8mA options
 - **Special Features**: 
-  - 5V tolerant inputs (selected pins)
+  - 5V tolerant inputs (selected pins; verify per datasheet)
   - Open-drain outputs
   - Internal pull-up/pull-down resistors
   - Interrupt capability on all pins

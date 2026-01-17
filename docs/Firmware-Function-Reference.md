@@ -273,14 +273,21 @@ This implementation is intentionally “debug-first”: it is good enough to dia
 
 Default configuration (compile-time override via macros in [tach.h](../tach.h)):
 
-- TACH input: **PM3 / GPIOM3**
+- TACH input: **PF1 / GPIOF1**
 - Electrical assumption: open-collector/open-drain tach output.
 - Uses internal weak pull-up (`GPIO_PIN_TYPE_STD_WPU`, to 3.3V).
 
 Safety note:
 
-- Do **not** pull the tach line up to +5V directly when connected to the TM4C.
+- Treat the tach input as **3.3V only** unless you have verified the pull-up rail.
+- If the source pull-up might be +5V, use an interface stage (transistor/MOSFET or divider + clamp) instead of wiring directly.
 
+#### Pin Separation (Jan 2026)
+
+- **TACHSYN output (faked tach to PSU)**: **PM3** (driven by `PHASE*` and `TSYN`)
+- **TACH input (sense real fan tach)**: **PF1** (used by `TACHIN ON/OFF` reporting)
+
+This separation avoids a hardware-risky conflict where one firmware mode drives a pin while another mode reconfigures that same pin as an input.
 ### `void tach_init(void)`
 
 ---
@@ -296,7 +303,7 @@ Initializes the GPIO and interrupt configuration for tach capture.
   - `g_tach_pulses`, `g_tach_rejects`, `g_last_edge_cycles`
   - reporting disabled
 
-### `void GPIOMIntHandler(void)`
+### `void GPIOFIntHandler(void)`
 
 GPIO interrupt handler that counts tach pulses.
 
@@ -311,7 +318,7 @@ GPIO interrupt handler that counts tach pulses.
 
 Glitch reject rationale:
 
-- The project PWM is ~21.5kHz (period ~46.5µs). A `TACH_MIN_EDGE_US` default of **200µs** rejects most PWM-coupled “fake edges” on the tach line.
+- The project PWM is ~24.9kHz (period ~40µs). A `TACH_MIN_EDGE_US` default of **200µs** rejects most PWM-coupled “fake edges” on the tach line.
 - This is a diagnostic filter; it may need to change when we move to a period-based tach strategy like the ESP32 implementation.
 
 ### `void tach_set_reporting(bool enabled)`
@@ -373,6 +380,199 @@ These can be overridden at build time (e.g. via `-D...`):
 Practical debug tip:
 
 - Use `PSYN OFF` to force PF2 low and reduce PWM coupling while observing the tach signal and `rejects` behavior.
+
+---
+
+## pwmin.c / pwmin.h
+
+Interrupt-driven **PWM input sensing** (intended for the PSU's ~24.9kHz control PWM), plus optional periodic UART0 reporting.
+
+### Default pinning
+
+- PWM input: **PF3 / GPIOF3**
+- Intended peripheral function: **T1CCP1** (Timer1B capture)
+
+Board note (TI TM4C1294 Connected LaunchPad, per `spmu365c.pdf`):
+
+- **PF3 is not connected to a user LED**. User LEDs D3/D4 are on **PF4/PF0**.
+
+### Commands
+
+- `PWMIN ON`: enables capture + prints one line every **1s** on UART0 (ICDI):
+  - `PWMIN: f=<Hz>Hz duty=<pct>%`
+- `PWMIN OFF`: stops the periodic printing
+- `PWMINDBG ON`: enables verbose diagnostics to UART0 and prints a diagnostic dump
+- `PWMINDBG OFF`: disables verbose diagnostics
+- `PWMINDBG DUMP`: prints a one-time diagnostic dump (UART0)
+
+### Technique and rationale (Jan 2026)
+
+This firmware originally implemented PWM sensing using **Timer1B capture** (PF3/T1CCP1). In practice, during bench testing we observed:
+
+- PF3 was physically toggling at ~25kHz (confirmed by a short GPIO sampling probe).
+- Timer1B capture produced **no capture events** (`raw=0 masked=0 edges_seen=0`).
+
+To make PWM input sensing robust in this environment, `pwmin.c` now uses a **dual-path strategy**:
+
+1. Attempt Timer1B capture (the “intended” peripheral path)
+2. If capture events do not occur, fall back to **GPIOF PF3 both-edge interrupts** and compute timing in software
+
+#### GPIO edge timestamp algorithm (fallback)
+
+The fallback path uses the system cycle timebase (`timebase_cycles32()`) as a timestamp source.
+
+- Configure PF3 as GPIO input.
+- Enable `GPIO_BOTH_EDGES` interrupt on PF3.
+- In the GPIOF ISR hook (`pwmin_gpiof_isr()`):
+  - Snapshot `now = timebase_cycles32()`.
+  - Read the PF3 logic level.
+  - If the level is HIGH (rising edge just occurred):
+    - If a previous rise exists, compute `period_cycles = now - last_rise`.
+    - Store `last_rise = now`.
+  - Else (falling edge):
+    - If a rise exists, compute `high_cycles = now - last_rise`.
+
+Computed outputs:
+
+- Frequency (Hz): `f = sysclk_hz / period_cycles`
+- Duty (%): `duty = 100 * high_cycles / period_cycles`
+
+This produces correct results for the project’s ~24.9kHz PWM, and it avoids relying on a specific timer capture mux/capture behavior.
+
+### Caveats / things to avoid
+
+- **Interrupt load**: both-edge interrupts at ~25kHz generate ~50k interrupts/sec. The ISR must be extremely small (no printing, no heavy math).
+- **Latency/jitter**: any long critical sections or high-priority ISRs will add timestamp jitter. Duty is usually more sensitive than frequency.
+- **Signal integrity**: fast edges + long wires can ring; use proper grounding and, if needed, series resistance / conditioning.
+- **Voltage**: PF3 is **3.3V-only**. If the source can be pulled up to 5V, add level shifting/conditioning.
+- **Assumptions**: this code assumes a stable `sysclk_hz` and a working `timebase_cycles32()`.
+
+### Diagnostic mode
+
+The debug prints used to diagnose capture failures are preserved, but are **gated behind `PWMINDBG`** so normal `PWMIN` output stays clean.
+
+---
+
+## tsyn.c / tsyn.h
+
+Tach signal synthesis on PM3.
+
+There are two distinct behaviors:
+
+- **TSYN** (legacy): generates a bursty “tach-like” waveform on PM3 based on PSYN.
+- **TACHSYN continuous**: generates a continuous square wave on PM3 at a specified frequency and duty.
+
+### PHASE commands (IBM PSU mimic)
+
+UART3 adds fixed “phase” presets intended to mimic the IBM PSU boot/regime expectations:
+
+- `PHASE1` / `PHASE 1`: PF2 PWM 24.9kHz @ 46% + PM3 TACHSYN 168Hz @ 50%
+- `PHASE2` / `PHASE 2`: PF2 PWM 24.9kHz @ 54% + PM3 TACHSYN 235Hz @ 50%
+- `PHASE1L` / `PHASE 1L`: PF2 PWM 24.9kHz @ 15% + PM3 TACHSYN 168Hz @ 50%
+- `PHASE2L` / `PHASE 2L`: PF2 PWM 24.9kHz @ 21% + PM3 TACHSYN 235Hz @ 50%
+
+### TSYN BOOT commands (time-based TACHSYN profile)
+
+UART3 commands:
+
+- `TSYN BOOT BEGIN`: starts the boot-profile generator on PM3.
+- `TSYN BOOT END`: stops the boot-profile generator.
+
+Runtime behavior:
+
+- The boot profile advances in the main loop (not inside an ISR) and is now advanced even while waiting for a UART3 DTR session, so it can run “immediately after reset” without requiring a UART3 connection.
+
+### TSYN COPY commands (TACHIN → TACHOUT mirroring)
+
+UART3 commands:
+
+- `TSYN COPY BEGIN`: mirrors PF1 (TACH IN) edge-for-edge onto PM3 (TACH OUT).
+- `TSYN COPY END`: stops mirroring and restores the persisted `TACH DEFAULT` behavior (fallback: `PHASE1L`).
+
+Implementation notes:
+
+- While COPY is active, the PF1 interrupt is configured for **both edges**, and the ISR writes PM3 as a push-pull GPIO output to track the PF1 level.
+- For tach diagnostics, the pulse counter still counts **falling edges** only.
+
+### Persistent default behavior (EEPROM)
+
+UART3 commands:
+
+- `TACH DEFAULT <1|2|1L|2L|BOOT|COPY>`: stores the selected default behavior in EEPROM.
+- `TACH DEFAULT CURRENT`: prints the currently stored default.
+
+Apply points:
+
+- On boot, the firmware loads EEPROM and applies the stored default (if unset/invalid: `PHASE1L`).
+- On `TSYN COPY END` and `TACH LOOPBACK END`, the firmware restores `TACH DEFAULT`.
+
+---
+
+## Jan 2026 update: COPY + DEFAULT (quick reference)
+
+### What changed
+
+- Added `TSYN COPY BEGIN/END`: mirrors PF1 (TACH IN) edge-for-edge onto PM3 (TACH OUT).
+- Added EEPROM-backed `TACH DEFAULT <1|2|1L|2L|BOOT|COPY>` and `TACH DEFAULT CURRENT`.
+- On boot, firmware loads EEPROM and applies the stored default (fallback: `PHASE1L`).
+- On `TSYN COPY END` and `TACH LOOPBACK END`, firmware restores the stored `TACH DEFAULT`.
+
+### How to use
+
+- Persist a default: `TACH DEFAULT 1L` (or `2`, `BOOT`, `COPY`, etc).
+- Verify default: `TACH DEFAULT CURRENT`.
+- Start mirroring: `TSYN COPY BEGIN`.
+- Stop mirroring and restore default: `TSYN COPY END`.
+- Check current mode states: `TSYN STATUS`.
+
+### Observed IBM PSU/server tach expectations (boot timeline)
+
+The following describes lab observations of what the IBM server/PSU appears to expect on the fan tach feedback line during a cold AC-power boot.
+
+All frequencies below are for a tach-like square wave at **~50% duty**, logic-level referenced to the PSU pull-up rail.
+
+Observed sequence (timestamps approximate):
+
+- **t = 0 to ~4.5s**: tach frequency transitions from ~60Hz down to ~50Hz.
+- **~4.5s to ~7s**: tach holds near a stable ~50Hz.
+- **~17s to ~28s**: tach ramps from ~50Hz up to the “phase 1” regime at ~168Hz.
+
+Notes / caveats:
+
+- The “~7s” and “~17s” markers were observed in the same session; treat the gap as “tach remains in the low regime until the ramp begins” unless/until refined with additional captures.
+- Because the server may actively supervise tach plausibility, any experimentation that disconnects or forces tach low may trigger shutdown.
+
+Phase transition behavior (steady-state expectations):
+
+- **Phase 1 steady-state**: PSU commands ~46% PWM at 24.9kHz; fan tach feedback is ~168Hz at 50%.
+- **Phase 2 steady-state**: PSU commands ~54% PWM at 24.9kHz; fan tach feedback is ~235–236Hz at 50%.
+
+Planned firmware direction (experimental):
+
+- Allow independent control of “real” PWM output applied to the fan versus the “fake” tach feedback supplied to the PSU.
+- Start with fixed presets (`PHASE1/2/1L/2L`), then evolve toward a dynamic mapping (LUT/interpolation) from measured PSU PWM demand → synthesized TACHSYN frequency.
+
+### Electrical rationale: open-drain vs push-pull on PM3
+
+- A **fan tach** is typically open-collector/open-drain, and the receiving electronics provides a pull-up.
+- For direct connection to an unknown external pull-up rail, configuring PM3 as **open-drain** is the closest electrical match.
+
+However, when using a small interface transistor (recommended for safety):
+
+- Use a 2N3904 (or similar) as open-collector to the PSU tach input: emitter→GND, collector→PSU tach input.
+- In that case, PM3 is driving the **base**, not the PSU node.
+- For base drive, PM3 should be **push-pull** so the base sees a solid HIGH without needing an extra pull-up on the GPIO.
+
+Firmware behavior:
+
+- TSYN legacy output keeps PM3 in **open-drain** mode.
+- PHASE commands set PM3 to **push-pull** drive for TACHSYN continuous mode (intended for 2N3904 base drive).
+
+### Measurement caveat: DMM averaging
+
+- A DMM DC reading on a running tach line often reflects a time-average.
+- For a 0↔3.3V, 50% duty waveform the average is ~1.65V.
+- That reading alone does **not** prove the pull-up rail is 3.3V; use a scope (DC-coupled) and measure the actual Vhigh.
 
 ### ESP32 reference guidance (for next tach algorithm iterations)
 

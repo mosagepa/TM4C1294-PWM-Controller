@@ -11,8 +11,9 @@
 #include "driverlib/sysctl.h"
 
 #include "timebase.h"
+#include "pwmin.h"
 
-/* Reject edges closer than this (microseconds). Helps ignore 21.5kHz PWM coupling. */
+/* Reject edges closer than this (microseconds). Helps ignore ~24.9kHz PWM coupling. */
 #ifndef TACH_MIN_EDGE_US
 #define TACH_MIN_EDGE_US 200U
 #endif
@@ -24,19 +25,34 @@ static volatile uint32_t g_last_edge_cycles = 0;
 
 static volatile bool g_tach_capture_enabled = true;
 
+static volatile bool g_copy_to_pm3 = false;
+
 static volatile bool g_tach_reporting = false;
 static uint32_t g_next_report_ms = 0;
 
+static volatile uint32_t g_loopback_expected_hz = 0;
+
 /*
- * GPIO Port K ISR (vector must point here).
+ * GPIO Port ISR (vector must point here).
  * Counts falling edges from open-collector TACH.
  */
-void GPIOMIntHandler(void)
+void GPIOFIntHandler(void)
 {
     uint32_t status = GPIOIntStatus(TACH_GPIO_BASE, true);
     GPIOIntClear(TACH_GPIO_BASE, status);
 
     if (status & TACH_GPIO_PIN) {
+        /* Optional COPY mode: mirror input level onto PM3 edge-for-edge. */
+        if (g_copy_to_pm3) {
+            uint8_t level = GPIOPinRead(TACH_GPIO_BASE, TACH_GPIO_PIN) ? 1U : 0U;
+            GPIOPinWrite(GPIO_PORTM_BASE, GPIO_PIN_3, level ? GPIO_PIN_3 : 0);
+            /* For reporting, count falling edges only (level==0 after interrupt). */
+            if (level == 0U) {
+                g_tach_pulses++;
+            }
+            return;
+        }
+
         /* Glitch reject: ignore unrealistically fast edges. */
         uint32_t now = timebase_cycles32();
         uint32_t delta = now - g_last_edge_cycles;
@@ -55,6 +71,41 @@ void GPIOMIntHandler(void)
         g_last_edge_cycles = now;
         g_tach_pulses++;
     }
+
+    /* Optional: PWMIN sensing on PF3 (enabled only when PWMIN is active). */
+    if (status & GPIO_PIN_3) {
+        pwmin_gpiof_isr(status);
+    }
+}
+
+void tach_set_copy_to_pm3(bool enabled)
+{
+    g_copy_to_pm3 = enabled;
+
+    if (enabled) {
+        /* Ensure PM3 is configured as a push-pull GPIO output. */
+        SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOM);
+        while (!SysCtlPeripheralReady(SYSCTL_PERIPH_GPIOM)) { }
+        GPIOPinTypeGPIOOutput(GPIO_PORTM_BASE, GPIO_PIN_3);
+        GPIOPadConfigSet(GPIO_PORTM_BASE, GPIO_PIN_3, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD);
+        GPIOPinWrite(GPIO_PORTM_BASE, GPIO_PIN_3, 0);
+
+        /* Switch PF1 interrupt to BOTH edges so we can mirror high and low. */
+        GPIOIntDisable(TACH_GPIO_BASE, TACH_GPIO_PIN);
+        GPIOIntClear(TACH_GPIO_BASE, TACH_GPIO_PIN);
+        GPIOIntTypeSet(TACH_GPIO_BASE, TACH_GPIO_PIN, GPIO_BOTH_EDGES);
+        GPIOIntEnable(TACH_GPIO_BASE, TACH_GPIO_PIN);
+        IntEnable(TACH_GPIO_INT);
+
+        return;
+    }
+
+    /* Restore normal falling-edge capture. */
+    GPIOIntDisable(TACH_GPIO_BASE, TACH_GPIO_PIN);
+    GPIOIntClear(TACH_GPIO_BASE, TACH_GPIO_PIN);
+    GPIOIntTypeSet(TACH_GPIO_BASE, TACH_GPIO_PIN, GPIO_FALLING_EDGE);
+    GPIOIntEnable(TACH_GPIO_BASE, TACH_GPIO_PIN);
+    IntEnable(TACH_GPIO_INT);
 }
 
 static void uart0_puts(const char *s)
@@ -176,6 +227,16 @@ bool tach_is_reporting(void)
     return g_tach_reporting;
 }
 
+void tach_set_loopback_expected_hz(uint32_t expected_hz)
+{
+    g_loopback_expected_hz = expected_hz;
+}
+
+uint32_t tach_get_loopback_expected_hz(void)
+{
+    return g_loopback_expected_hz;
+}
+
 void tach_task(void)
 {
     if (!g_tach_reporting) return;
@@ -201,11 +262,34 @@ void tach_task(void)
        pulses_per_sec = pulses / 0.5 = 2*pulses => RPM = 60*pulses. */
     uint32_t rpm = pulses * 60U;
 
+    uint32_t expected_hz = g_loopback_expected_hz;
+    uint32_t expected_pulses = 0;
+    bool have_expect = (expected_hz != 0U);
+    if (have_expect) {
+        /* In this firmware, we count falling edges; for a square wave, pulses/sec ~= Hz.
+           Window is 0.5s, so expected pulses ~= Hz/2. */
+        expected_pulses = expected_hz / 2U;
+    }
+
     uart0_puts("TACH pulses=");
     uart0_put_u32(pulses);
     uart0_puts(" rejects=");
     uart0_put_u32(rejects);
     uart0_puts(" rpm=");
     uart0_put_u32(rpm);
+
+    if (have_expect) {
+        /* Allow a small tolerance to avoid false negatives due to window alignment. */
+        const uint32_t tol = 2U;
+        uint32_t low = (expected_pulses > tol) ? (expected_pulses - tol) : 0U;
+        uint32_t high = expected_pulses + tol;
+        bool ok = (pulses >= low && pulses <= high);
+
+        uart0_puts(" loopback_exp_hz=");
+        uart0_put_u32(expected_hz);
+        uart0_puts(" exp_pulses_0p5s=");
+        uart0_put_u32(expected_pulses);
+        uart0_puts(ok ? " OK" : " FAIL");
+    }
     uart0_puts("\r\n");
 }

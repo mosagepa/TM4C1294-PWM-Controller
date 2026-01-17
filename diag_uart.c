@@ -384,7 +384,7 @@ int diag_heap_bytes_used(void)
 {
     /* Simple estimation - would need malloc_simple.c integration for accuracy */
     uint32_t heap_start = (uint32_t)&_heap_start;
-    /* Remove unused variable to fix warning */
+    (void)heap_start;
     
     /* This is a placeholder - real implementation would track malloc'd bytes */
     /* For now just show heap region size */
@@ -399,7 +399,7 @@ int diag_heap_bytes_used(void)
 /* PUTC NON-BLOCKING VERSION USING HEAP ::: */
 /* Bounded non-blocking-ish put: wait for transmitter not-busy with timeout.
    Returns 0 on success, -1 on timeout. */
-static int diag_putc_nb(char c)
+static __attribute__((unused)) int diag_putc_nb(char c)
 {
     const uint32_t max_loops = 20000; /* tune: larger => longer wait before giving up */
     uint32_t loops = 0;

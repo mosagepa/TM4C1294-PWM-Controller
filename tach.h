@@ -13,32 +13,39 @@
 /*
  * TACH input (open-collector) sensing.
  *
- * Default wiring (can be overridden by defines at compile time):
- * - TACH signal -> GPIOM3 (PM3)
- * - Uses internal weak pull-up (3.3V). Do NOT pull up to +5V directly.
+ * IMPORTANT: PM3 is reserved for synthesized tach output (TACHSYN).
+ * TACH input is intentionally on a different pin so TSYN/PHASE cannot
+ * accidentally reconfigure the same physical line as both input and output.
  */
 #ifndef TACH_GPIO_PERIPH
-#define TACH_GPIO_PERIPH SYSCTL_PERIPH_GPIOM
+#define TACH_GPIO_PERIPH SYSCTL_PERIPH_GPIOF
 #endif
 #ifndef TACH_GPIO_BASE
-#define TACH_GPIO_BASE GPIO_PORTM_BASE
+#define TACH_GPIO_BASE GPIO_PORTF_BASE
 #endif
 #ifndef TACH_GPIO_PIN
-#define TACH_GPIO_PIN GPIO_PIN_3
+#define TACH_GPIO_PIN GPIO_PIN_1
 #endif
 #ifndef TACH_GPIO_INT
-#define TACH_GPIO_INT INT_GPIOM
+#define TACH_GPIO_INT INT_GPIOF
 #endif
 
 void tach_init(void);
 
-/* Enable/disable GPIO interrupt capture on the tach pin (PM3 by default). */
+/* Enable/disable GPIO interrupt capture on the tach input pin (PF1 by default). */
 void tach_set_capture_enabled(bool enabled);
 bool tach_is_capture_enabled(void);
 
 /* Enable/disable periodic reporting to UART0 (ICDI). */
 void tach_set_reporting(bool enabled);
 bool tach_is_reporting(void);
+
+/* Loopback self-test helper: when expected_hz is nonzero, tach_task prints an OK/FAIL hint. */
+void tach_set_loopback_expected_hz(uint32_t expected_hz);
+uint32_t tach_get_loopback_expected_hz(void);
+
+/* Exact edge-for-edge mirroring of TACH input onto PM3 (tach out). */
+void tach_set_copy_to_pm3(bool enabled);
 
 /* Call periodically from the main loop. */
 void tach_task(void);

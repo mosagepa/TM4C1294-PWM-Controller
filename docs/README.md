@@ -8,6 +8,10 @@ This documentation provides comprehensive technical details about the TM4C1294-P
 - **[README.md](../README.md)**: Project overview, quick start, and basic usage
 - **[GHCP_COMMENTS.md](../GHCP_COMMENTS.md)**: Technical blog with AI collaboration insights
 
+### Command & Behavior Reference
+
+- **[Firmware Function Reference](./Firmware-Function-Reference.md)**: UART3 commands (PHASE/TSYN/TACH/PWMIN), tach modes (BOOT/COPY/LOOPBACK), and EEPROM-backed `TACH DEFAULT` behavior.
+
 ### Detailed Technical Documentation
 
 #### 🧭 [Project Evolution - From ATTiny45 → ESP32-S2 → TM4C1294XL](./Project-Evolution.md)
@@ -100,4 +104,28 @@ This documentation is maintained alongside code development:
 
 ---
 
-**Documentation Version**: 1.0 | **Last Updated (docs)**: December 2025 | **Status**: Active Development
+## 🔖 Project Checkpoints (Jan 2026)
+
+To make it easy to revert or compare behavior across major debugging sessions, we maintain named git tags.
+
+### 1) Recovered snapshot (pre-PWMIN GPIO fallback)
+
+- Tag: `snapshot_integr_v03_20260113a`
+- Checkout:
+	- `git checkout snapshot_integr_v03_20260113a`
+
+This corresponds to the “last-known-good” restored snapshot before the PWM-input sensing work that added the GPIO edge-timestamp fallback.
+
+### 2) New baseline (“updated as of now”)
+
+- Tag: `baseline_20260117_pwmin_gpio_fallback` (created in the same Jan 17 2026 session)
+- Checkout:
+	- `git checkout baseline_20260117_pwmin_gpio_fallback`
+
+Key deltas vs the recovered snapshot are documented in the `pwmin.c / pwmin.h` section of:
+
+- [Firmware-Function-Reference.md](./Firmware-Function-Reference.md)
+
+---
+
+**Documentation Version**: 1.1 | **Last Updated (docs)**: January 2026 | **Status**: Active Development

@@ -22,7 +22,9 @@ extern void main(void);
 void ICDIUARTIntHandler(void);
 void USERUARTIntHandler(void);
 void SysTickIntHandler(void);
-void GPIOMIntHandler(void);
+void GPIOFIntHandler(void);
+void Timer4AIntHandler(void);
+void Timer1BIntHandler(void);
 
 
 /* Standard handlers (prototypes) */
@@ -85,7 +87,7 @@ void(* myvectors[])(void) = {
     empty_def_handler,      // 16/32 bit timer 0 A       35
     empty_def_handler,      // 16/32 bit timer 0 B       36
     empty_def_handler,      // 16/32 bit timer 1 A       37
-    empty_def_handler,      // 16/32 bit timer 1 B       38
+    Timer1BIntHandler,      // 16/32 bit timer 1 B       38
     empty_def_handler,      // 16/32 bit timer 2 A       39
     empty_def_handler,      // 16/32 bit timer 2 B       40
     empty_def_handler,      // Analog comparator 0       41
@@ -93,7 +95,7 @@ void(* myvectors[])(void) = {
     empty_def_handler,      // Analog comparator 2       43
     empty_def_handler,      // System control (PLL, OSC, BO) 44
     empty_def_handler,      // Flash + EEPROM control    45
-    empty_def_handler,      // GPIO Port F               46
+    GPIOFIntHandler,        // GPIO Port F               46
     empty_def_handler,      // GPIO Port G               47
     empty_def_handler,      // GPIO Port H               48
     empty_def_handler,      // UART 2                    49
@@ -126,7 +128,7 @@ void(* myvectors[])(void) = {
     empty_def_handler,      // UART 7                    76
     empty_def_handler,      // I2C 2 Master & Slave      77
     empty_def_handler,      // I2C 3 Master & Slave      76 (note: original list had duplicated numbers)
-    empty_def_handler,      // 16/32 bit timer 4 A       77
+    Timer4AIntHandler,      // 16/32 bit timer 4 A       77
     empty_def_handler,      // 16/32 bit timer 4 B       78
     empty_def_handler,      // 16/32 bit timer 5 A       79
     empty_def_handler,      // 16/32 bit timer 5 B       80
@@ -135,7 +137,7 @@ void(* myvectors[])(void) = {
     0,                      // Reserved                  83
     empty_def_handler,      // I2C 4 Master & Slave      84
     empty_def_handler,      // I2C 5 Master & Slave      85
-    GPIOMIntHandler,        // GPIO Port M               86
+    empty_def_handler,      // GPIO Port M               86
     empty_def_handler,      // GPIO Port N               87
     0,                      // Reserved                  88
     empty_def_handler,      // Tamper                    89

@@ -76,6 +76,38 @@ Flash Memory Layout:
 - **Protection**: MPU support for access control
 - **ECC**: Optional error correction (not implemented on TM4C1294)
 
+#### Firmware Build Memory Layout (This Project)
+
+This project currently uses a **project-specific linker configuration** that intentionally
+links the firmware into a **32KB SRAM window**, even though the TM4C1294 hardware provides
+256KB SRAM.
+
+- **Why this matters**: the linker's `--print-memory-usage` report reflects the configured
+   SRAM window and any reserved (NOLOAD) regions, not necessarily the full silicon SRAM.
+- **Current configuration** (see `TM4C1294XL.ld` in this repository):
+   - SRAM window: 32KB starting at `0x20000000`
+   - Stack reserve: 8KB at the top of that window
+   - Heap reserve: fixed-size `.heap` region (NOLOAD) between `.bss` and the guard band
+
+##### SRAM Usage Reduction (Jan 2026)
+
+The linker-reserved heap region was reduced so the SRAM report reflects actual usage more
+accurately and to leave more unused SRAM as guard space between heap growth and the
+stack-reserved region.
+
+- **Before**: `.heap` reserved ~22KB → linker reported ~75% SRAM used
+- **After**: `.heap` reserved 8KB → linker reported ~31% SRAM used
+
+**Runtime impact**:
+- `malloc()` growth is bounded by the reserved heap size; exceeding it causes allocation
+   failure (errno `ENOMEM`).
+- More unused SRAM remains as a **guard band**, reducing heap/stack collision risk.
+
+##### How to Tune / Verify
+
+- Tune heap size by editing `_heap_size` in the linker script and rebuilding.
+- Verify with `arm-none-eabi-size -A integr_V03.axf` (check `.data`, `.bss`, and `.heap`).
+
 #### EEPROM Specifications
 - **Size**: 6144 bytes organized as 96 blocks of 64 bytes
 - **Endurance**: 500,000 program/erase cycles minimum
@@ -91,6 +123,23 @@ Flash Memory Layout:
 - **Tail-chaining**: Efficient back-to-back interrupt handling
 - **Late Arrival**: Interrupt preemption during stacking
 - **Vector Table**: Relocatable in Flash or SRAM
+
+##### Important Caveat (Jan 2026): `IntRegister()` can HardFault if the vector table is in Flash
+
+This project uses a **static** NVIC vector table placed at the start of flash (see
+[`TM4C1294XL_startup.c`](../TM4C1294XL_startup.c) and the linker script
+[`TM4C1294XL.ld`](../TM4C1294XL.ld) which `KEEP(*(.nvic_table))`).
+
+**What went wrong (symptom: “ICDI stalls”)**:
+- Adding `IntRegister(INT_TIMER4A, Timer4AIntHandler)` (from TivaWare) caused an **early fault** on reset.
+- Root cause: `IntRegister()` works by **writing** the handler address into the vector table. If the vector table is still in **flash**, that write is not allowed and can fault before UART0 prints anything.
+
+**Safe patterns to use in future projects**:
+- Prefer a **static** startup vector table where the needed IRQ entries already point at your handlers.
+- If you truly need runtime handler registration, explicitly **relocate the vector table to SRAM** first (and only then use `IntRegister()`).
+
+**How this repo handles it now**:
+- Timer4A is bound directly in the startup vector table; runtime `IntRegister()` is not used for Timer4A.
 
 #### Memory Protection Unit (MPU)
 - **Regions**: 8 configurable memory regions
@@ -306,7 +355,7 @@ UART7: PC4/PC5, PE0/PE1
 #### Timer CCP Alternate Functions
 ```
 T0CCP0: PB0, PF2 (selected for PWM)
-T0CCP1: PB1, PF3
+T0CCP1: PB1, PF1
 T1CCP0: PA2, PB4, PE4, PF1, PN4
 T1CCP1: PA3, PB5, PE5, PF3, PN5
 ```

@@ -66,7 +66,9 @@ extern void * _sbrk(ptrdiff_t incr);
 
 #include "timebase.h"
 #include "tach.h"
+#include "pwmin.h"
 #include "tsyn.h"
+#include "tach_default.h"
 
 
 uint32_t g_ui32SysClock;
@@ -74,7 +76,7 @@ uint32_t g_ui32SysClock;
 
 /* Configs at MAIN level (avoid declaring UART-comm constants here,
    those will be better place within 'cmdline.h' ... */ 
-#define TARGET_PWM_FREQ_HZ 21500U
+#define TARGET_PWM_FREQ_HZ 24900U
 #define TARGET_DUTY_PERCENT_INIT 30U
 #define PSYN_MIN 5
 #define PSYN_MAX 96
@@ -94,6 +96,101 @@ static volatile char user_rx_buf[UART_RX_BUF_SIZE];
 
 static volatile uint32_t user_rx_len = 0;
 static volatile bool user_cmd_ready = false;
+
+/* UART3 command history (no malloc; fixed-size ring). */
+#define UART3_HIST_MAX 10U
+static char g_uart3_hist[UART3_HIST_MAX][UART_RX_BUF_SIZE];
+static uint32_t g_uart3_hist_count = 0;
+static uint32_t g_uart3_hist_head = 0; /* next write index */
+static int32_t g_uart3_hist_nav = -1;  /* -1 = current edit line; 0..count-1 = offset from most recent */
+static char g_uart3_hist_scratch[UART_RX_BUF_SIZE];
+static uint32_t g_uart3_hist_scratch_len = 0;
+
+static void uart3_hist_add_line(const char *line)
+{
+    if (!line || *line == '\0') return;
+
+    /* Avoid storing pure whitespace. */
+    bool any_nonspace = false;
+    for (const char *p = line; *p; ++p) {
+        if (*p != ' ' && *p != '\t' && *p != '\r' && *p != '\n') {
+            any_nonspace = true;
+            break;
+        }
+    }
+    if (!any_nonspace) return;
+
+    /* Avoid duplicate consecutive entries. */
+    if (g_uart3_hist_count > 0) {
+        uint32_t last_idx = (g_uart3_hist_head + UART3_HIST_MAX - 1U) % UART3_HIST_MAX;
+        if (strncmp(g_uart3_hist[last_idx], line, UART_RX_BUF_SIZE) == 0) {
+            return;
+        }
+    }
+
+    strncpy(g_uart3_hist[g_uart3_hist_head], line, UART_RX_BUF_SIZE - 1U);
+    g_uart3_hist[g_uart3_hist_head][UART_RX_BUF_SIZE - 1U] = '\0';
+
+    g_uart3_hist_head = (g_uart3_hist_head + 1U) % UART3_HIST_MAX;
+    if (g_uart3_hist_count < UART3_HIST_MAX) {
+        g_uart3_hist_count++;
+    }
+}
+
+static const char *uart3_hist_get_recent(uint32_t offset)
+{
+    if (g_uart3_hist_count == 0) return NULL;
+    if (offset >= g_uart3_hist_count) return NULL;
+
+    /* offset=0 => most recent entry */
+    uint32_t idx = (g_uart3_hist_head + UART3_HIST_MAX - 1U - offset) % UART3_HIST_MAX;
+    return g_uart3_hist[idx];
+}
+
+static void uart3_hist_reset_nav(void)
+{
+    g_uart3_hist_nav = -1;
+    g_uart3_hist_scratch_len = 0;
+    g_uart3_hist_scratch[0] = '\0';
+}
+
+static void uart3_hist_save_scratch_from_current(void)
+{
+    uint32_t len = user_rx_len;
+    if (len >= UART_RX_BUF_SIZE) len = UART_RX_BUF_SIZE - 1U;
+    for (uint32_t i = 0; i < len; i++) {
+        g_uart3_hist_scratch[i] = (char)user_rx_buf[i];
+    }
+    g_uart3_hist_scratch[len] = '\0';
+    g_uart3_hist_scratch_len = len;
+}
+
+static void uart3_line_clear_current(void)
+{
+    while (user_rx_len > 0) {
+        user_rx_len--;
+        ROM_UARTCharPutNonBlocking(UART3_BASE, '\b');
+        ROM_UARTCharPutNonBlocking(UART3_BASE, ' ');
+        ROM_UARTCharPutNonBlocking(UART3_BASE, '\b');
+    }
+    ((char *)user_rx_buf)[0] = '\0';
+}
+
+static void uart3_line_set_from_string(const char *s)
+{
+    uart3_line_clear_current();
+    if (!s) return;
+
+    uint32_t len = 0;
+    while (s[len] && len + 1U < UART_RX_BUF_SIZE) {
+        char c = s[len];
+        ((char *)user_rx_buf)[len] = c;
+        ROM_UARTCharPutNonBlocking(UART3_BASE, c);
+        len++;
+    }
+    ((char *)user_rx_buf)[len] = '\0';
+    user_rx_len = len;
+}
 
 /* Hidden keystroke feature: 5 consecutive 'P' typed on UART3 triggers UART0 GOTCHA. */
 static volatile uint8_t g_uart3_p_run = 0;
@@ -144,7 +241,7 @@ static void setup_system_clock(void);
 static void setup_pwm_pf2(void);
 static void set_pwm_percent(uint32_t percent);
 static void setup_uarts(void);
-static void process_user_line(const char *line);
+static void process_user_line(const char *line) __attribute__((unused));
 static void user_uart3_consume_pending_input(void);
 
 /* Expose PWM setter to higher-level command module without changing ISR logic. */
@@ -212,6 +309,9 @@ void USERUARTIntHandler(void)
 
     while (ROM_UARTCharsAvail(UART3_BASE)) {
 
+        /* Minimal ANSI escape parsing for arrow keys: ESC [ A/B */
+        static uint8_t esc_state = 0; /* 0=normal, 1=got ESC, 2=got ESC[, 3=got ESC O */
+
         uint8_t c = ROM_UARTCharGetNonBlocking(UART3_BASE);
 
         if (user_cmd_ready) {
@@ -219,9 +319,61 @@ void USERUARTIntHandler(void)
             continue;
         }
 
+        if (esc_state != 0) {
+            if (esc_state == 1) {
+                if (c == '[') {
+                    esc_state = 2;
+                } else if (c == 'O') {
+                    esc_state = 3;
+                } else {
+                    esc_state = 0;
+                }
+                continue;
+            }
+            if (esc_state == 2 || esc_state == 3) {
+                /* Arrow up/down (CSI: ESC [ A/B) or SS3: ESC O A/B). */
+                if (c == 'A') {
+                    if (g_uart3_hist_count > 0) {
+                        if (g_uart3_hist_nav < 0) {
+                            uart3_hist_save_scratch_from_current();
+                            g_uart3_hist_nav = 0;
+                        } else if ((uint32_t)g_uart3_hist_nav + 1U < g_uart3_hist_count) {
+                            g_uart3_hist_nav++;
+                        }
+
+                        const char *cmd = uart3_hist_get_recent((uint32_t)g_uart3_hist_nav);
+                        uart3_line_set_from_string(cmd);
+                    }
+                } else if (c == 'B') {
+                    if (g_uart3_hist_nav >= 0) {
+                        if (g_uart3_hist_nav == 0) {
+                            g_uart3_hist_nav = -1;
+                            uart3_line_set_from_string(g_uart3_hist_scratch);
+                        } else {
+                            g_uart3_hist_nav--;
+                            const char *cmd = uart3_hist_get_recent((uint32_t)g_uart3_hist_nav);
+                            uart3_line_set_from_string(cmd);
+                        }
+                    }
+                }
+
+                esc_state = 0;
+                continue;
+            }
+
+            esc_state = 0;
+            continue;
+        }
+
+        if (c == 0x1B) {
+            esc_state = 1;
+            continue;
+        }
+
         /* Handle backspace/delete locally (do not allow erasing prompt). */
         if (c == '\b' || c == 0x7FU) {
             g_uart3_p_run = 0;
+            uart3_hist_reset_nav();
             if (user_rx_len > 0) {
                 user_rx_len--;
                 ROM_UARTCharPutNonBlocking(UART3_BASE, '\b');
@@ -253,6 +405,9 @@ void USERUARTIntHandler(void)
         if (c >= 'a' && c <= 'z') {
             c = (uint8_t)(c - 'a' + 'A');
         }
+
+        /* Any normal character input resets history navigation. */
+        uart3_hist_reset_nav();
 
         /* Hidden GOTCHA: trigger immediately on 5 consecutive 'P' keystrokes. */
         if (c == 'P') {
@@ -291,7 +446,7 @@ void USERUARTIntHandler(void)
 
 
 /* Command processing - exactly as in your pwm.c */
-static void process_user_line(const char *line)
+static __attribute__((unused)) void process_user_line(const char *line)
 {
     /* Skip leading spaces */
     while (*line && my_isspace((unsigned char)*line)) line++;
@@ -529,6 +684,10 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
     }
     cmd_local[len] = '\0';
 
+    diag_puts("DEBUG: cmd = '");
+    diag_puts(cmd_local);
+    diag_puts("'\r\n");
+
     /* Print the length for diagnostics (ICDI UART) */
     diag_puts("DEBUG: cmd len = ");
     diag_put_hex32(len);
@@ -596,12 +755,12 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
     }
 
     /*
-    // Commented out dynamic allocation test to isolate stall issue
-    /* --- Dynamic string allocation test (inserted test) ---
+     * Commented out dynamic allocation test to isolate stall issue
+     * --- Dynamic string allocation test (inserted test) ---
     const char *lit = "DYN_TEST: Hello from dynamic buffer!";
     size_t lit_len = strlen(lit);
 
-    /* allocate exact space (len + NUL)
+     * allocate exact space (len + NUL)
     char* dyn = NULL;
     
     //dyn = (char *)malloc(lit_len + 1);
@@ -613,20 +772,20 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
 
     } else {
         
-        /* copy literal into allocated area (this makes the bytes come from heap memory)
+        * copy literal into allocated area (this makes the bytes come from heap memory)
         memcpy(dyn, lit, lit_len + 1);
 
-        /* Print address and length using diag helpers (ICDI UART)
+        * Print address and length using diag helpers (ICDI UART)
         diag_puts("DYN ALLOC -> addr=");
         diag_put_ptr((void *)dyn);
         diag_puts(" len=");
         diag_put_u32_dec((uint32_t)lit_len);
         diag_puts("\r\n");
 
-        /* Use diag_print_variable to print region and a hex-preview of the allocated block
+        * Use diag_print_variable to print region and a hex-preview of the allocated block
         diag_print_variable("dyn_str", (const void *)dyn, (size_t)(lit_len + 1), DIAG_PREVIEW_NOLIMIT);
 
-        /* Demonstrate snprintf usage: format a human line and send it via ICDI UART
+        * Demonstrate snprintf usage: format a human line and send it via ICDI UART
         //char msgbuf[320];  ---> TRY TO USE THIS "THE PROPER WAY" LATER ON !!!
 
         void *sp = NULL;
@@ -637,7 +796,7 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
         diag_puts("sbrk(0) before = ");
         diag_put_ptr(_sbrk(0)); diag_puts("\r\n");
 
-        /*
+        *
         int n = snprintf(msgbuf, sizeof(msgbuf),
             "SNPRINTF: dyn@%p len=%u contents='%s'\r\n",
             (void *)dyn, (unsigned)lit_len, dyn);
@@ -647,8 +806,8 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
         }
         
 
-        /* --- replace the old stack snprintf block with this: ---
-        /*
+        * --- replace the old stack snprintf block with this: ---
+        *
         {
             int n = diag_snprintf_heap_send("SNPRINTF: dyn@%p len=%u contents='%s'\r\n",
                                     (void *)dyn, (unsigned)lit_len, dyn);
@@ -658,11 +817,11 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
         }
         
 
-        /* Free the block and show a short note
+        * Free the block and show a short note
         free(dyn);
         diag_puts("DYN ALLOC freed\r\n");
 
-    }        /* --- end dynamic test ---
+    }        -- end dynamic test --
     */
 
     void *cur_brk = _sbrk(0);
@@ -675,10 +834,6 @@ void example_dynamic_cmd_copy_and_process(const volatile char *user_rx_buf, uint
 
 int main(void)
 {
-
-    unsigned int currCopyCharIdx = 0;
-    unsigned char currCopyChar = 0x00;
-
     setup_system_clock();
 
     // Check if we had a hard fault (bit 31 of SCB->HFSR)
@@ -702,7 +857,12 @@ int main(void)
     /* Non-blocking timebase + tach input (does not touch PWM mechanics). */
     timebase_init(g_ui32SysClock);
     tach_init();
+    pwmin_init(g_ui32SysClock);
     tsyn_init(g_ui32SysClock);
+
+    /* Load/apply persistent default behavior (fallback is PHASE1L). */
+    tach_default_init();
+    tach_default_apply();
 
     /* Initial basic probing of the _sbrk allocation callback/ helper */
     //diag_sbrk_probe();
@@ -744,6 +904,8 @@ int main(void)
         UARTSend((const uint8_t *)"NO SESSION ACTIVE\r\n", 20, UARTDEV_ICDI);
 
         while (ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
+            /* Keep BOOT profile running even without an active UART3 session. */
+            tachsyn_boot_task();
             SysCtlDelay(g_ui32SysClock / (1000 * 100));
         }
 
@@ -759,10 +921,31 @@ int main(void)
         user_cmd_ready = false;
 
         /* Session active */
-        while (!ROM_GPIOPinRead(DTR_PORT, DTR_PIN) && !g_uart3_force_disconnect) {
+        /* Debounce DTR release so brief glitches don't drop the session. */
+        uint32_t dtr_high_streak = 0;
+        enum { DTR_DISCONNECT_STREAK = 8 }; /* ~8 * (loop sleep ~10ms) ~= ~80ms */
+
+        while (!g_uart3_force_disconnect) {
+
+            if (ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
+                if (dtr_high_streak < DTR_DISCONNECT_STREAK) {
+                    dtr_high_streak++;
+                }
+                if (dtr_high_streak >= DTR_DISCONNECT_STREAK) {
+                    break;
+                }
+            } else {
+                dtr_high_streak = 0;
+            }
 
             /* Periodic tach reporting to UART0 if enabled (TACHIN command). */
             tach_task();
+
+            /* Advance TSYN BOOT profile if enabled (updates PM3 TACHSYN). */
+            tachsyn_boot_task();
+
+            /* Periodic PWM-input reporting to UART0 if enabled (PWMIN command). */
+            pwmin_task();
 
             if (g_uart3_gotcha_pending) {
                 g_uart3_gotcha_pending = false;
@@ -799,6 +982,7 @@ int main(void)
                 ROM_IntEnable(INT_UART3);
 
                 if (cmd_local[0] != '\0') {
+                    uart3_hist_add_line(cmd_local);
                     commands_process_line(cmd_local);
                 }
 
