@@ -197,18 +197,32 @@ This avoids editing the Makefile per host.
 
 ### Timer Modules
 
-#### Timer0 - PWM Generation
-- **Configuration**: Split mode, Timer A as PWM
-- **Frequency**: 21.5 kHz base frequency
-- **Resolution**: 16-bit (65,536 steps)
-- **Duty Cycle**: 5-96% range with 1% resolution
+#### PWM0 module - PWM generation (PF2)
+
+In the current firmware, PWM output is produced by the **PWM peripheral** (not a TimerA PWM mode).
+
+- **Pin**: PF2 (`M0PWM2`)
+- **Module / generator**: `PWM0`, `PWM_GEN_1`, output `PWM_OUT_2`
+- **Base frequency target**: **24.9 kHz** (`TARGET_PWM_FREQ_HZ 24900U`)
+- **Duty cycle range**: 5–96% (enforced by command layer)
+- **Clocking**: `PWM_SYSCLK_DIV_1` (uses system clock)
+
+Representative configuration (from `main.c`):
 
 ```c
-// Timer0 PWM configuration
-TimerConfigure(TIMER0_BASE, TIMER_CFG_A_PWM);
-TimerLoadSet(TIMER0_BASE, TIMER_A, ui32PWMClock);
-TimerControlLevel(TIMER0_BASE, TIMER_A, false); // Non-inverted PWM
+GPIOPinConfigure(GPIO_PF2_M0PWM2);
+GPIOPinTypePWM(GPIO_PORTF_BASE, GPIO_PIN_2);
+
+PWMClockSet(PWM0_BASE, PWM_SYSCLK_DIV_1);
+
+PWMGenConfigure(PWM0_BASE, PWM_GEN_1, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+PWMGenPeriodSet(PWM0_BASE, PWM_GEN_1, period);
+PWMPulseWidthSet(PWM0_BASE, PWM_OUT_2, pulse);
+PWMOutputState(PWM0_BASE, PWM_OUT_2_BIT, true);
+PWMGenEnable(PWM0_BASE, PWM_GEN_1);
 ```
+
+Note: with a 120 MHz system clock, the period is quantized to an integer number of clock ticks. The firmware targets 24.9 kHz closely by computing `period = round(sysclk / 24900)`.
 
 #### Available Additional Timers
 - **Timer1-7**: 32-bit general purpose timers

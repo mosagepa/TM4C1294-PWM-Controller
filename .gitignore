@@ -18,5 +18,8 @@ logs/
 # Keep documentation PDFs under docs/
 !/docs/*.pdf
 
+# Keep a small set of top-level PDFs that we intentionally version.
+!/Hardware-Requirements.pdf
+
 # Derived extracts (local)
 Comment_*.md
