@@ -23,3 +23,15 @@ logs/
 
 # Derived extracts (local)
 Comment_*.md
+
+# Local scratch artifacts (do not version)
+ERRORRARO*.TXT
+logs_dijkstra/
+__NETBRIDGE_WORKING_BROXMOX/
+
+# md2pdf/pandoc intermediates
+/docs/*.html
+/docs/*_fromHTML.pdf
+
+# Local repro notes
+/tools/test_scripts/*_repro.txt
