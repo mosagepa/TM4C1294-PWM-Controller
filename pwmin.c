@@ -78,6 +78,8 @@ static volatile bool g_have_high32 = false;
 
 static uint32_t g_next_report_ms = 0;
 
+static void uart0_put_u32(uint32_t v);
+
 static void uart0_puts(const char *s)
 {
     if (!s) return;
