@@ -699,6 +699,23 @@ Key behaviors:
 - Preflight/postflight cleanup is enabled by default; can be disabled via `--no-preflight` / `--no-postflight`.
 - For testing GOTCHA (real-time keystrokes), prefer `TYPE PPPPP` rather than a line-based `SEND` that appends ENTER.
 
+### Selecting UART device nodes (`/dev/ttyUSB0` vs `/dev/ttyUSB1`)
+
+On Linux, the UART3 USB-serial adapter typically enumerates as `/dev/ttyUSB*`, but the index can change across hosts and reboots.
+
+Recommended: use stable device names:
+
+- List stable IDs: `ls -l /dev/serial/by-id/`
+- Use those paths in host tooling:
+  - `python3 tools/uart_session.py --uart0 /dev/ttyACM0 --uart3 /dev/serial/by-id/<adapter>`
+
+Makefile override (quick and convenient):
+
+- `make capture UART3_DEV=/dev/ttyUSB0`
+- `make auto UART0_DEV=/dev/ttyACM0 UART3_DEV=/dev/ttyUSB1`
+
+This is the intended way to “switch” without editing project files.
+
 ---
 
 ## Hidden GOTCHA Feature (current spec)

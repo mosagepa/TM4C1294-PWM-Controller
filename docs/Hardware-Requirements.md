@@ -119,24 +119,19 @@ SysCtlClockFreqSet((SYSCTL_XTAL_25MHZ | SYSCTL_OSC_MAIN |
 
 ## Pin Assignments and Connections
 
-### PWM Output Configuration
+### Project pinning (what this firmware actually uses)
 
-#### Primary PWM Pin: PF2
-- **Function**: Timer0A PWM output (T0CCP0)
-- **Location**: BoosterPack pin 29 (J1 connector)
-- **Electrical**: 3.3V logic, 8mA drive capability
-- **Frequency**: 21.5 kHz (configurable via timer load value)
+This section documents the *actual* signal wiring used by the current firmware.
 
-```c
-// PWM pin configuration
-GPIOPinConfigure(GPIO_PF2_T0CCP0);
-GPIOPinTypeTimer(GPIO_PORTF_BASE, GPIO_PIN_2);
-```
-
-#### Alternative PWM Pins Available
-- **PF3**: Timer1A (T1CCP1) - BoosterPack pin 30
-- **PG0**: Timer2A (T2CCP0) - BoosterPack pin 3
-- **PG1**: Timer3A (T3CCP1) - BoosterPack pin 4
+| Signal | MCU pin | Peripheral / function | Notes |
+|---|---|---|---|
+| PWM output (to PSU) | PF2 | `M0PWM2` (PWM0 module, output 2) | Target is ~24.9kHz (`TARGET_PWM_FREQ_HZ 24900U`), duty via `PSYN` / `PHASE*`. 3.3V logic. |
+| PWM input sense (from PSU) | PF3 | Intended `T1CCP1` (Timer1B capture), fallback GPIOF both-edge ISR | `PWMIN` reports `f` + `duty` at 1Hz on UART0. PF3 is **not** a user LED pin on this board (LEDs are PF0/PF4, PN0/PN1). |
+| TACH input (fan tach sense) | PF1 | GPIO interrupt (falling edge + reject filter) | Uses internal weak pull-up; treat as **3.3V only** unless conditioned. |
+| TACH output (fake tach to PSU) | PM3 | Timer-based tach synthesizer | Driven by `PHASE*`, `TSYN BOOT`, `TSYN COPY`. |
+| UART0 (ICDI debug/log) | PA0/PA1 | `U0RX/U0TX` | Shows as `/dev/ttyACM*` on Linux. |
+| UART3 (user command port) | PA4/PA5 | `U3TX/U3RX` | Typically via external USB-serial adapter (`/dev/ttyUSB*`), 3.3V logic. |
+| Session detect (DTR) | PQ1 | GPIO input | Used to detect terminal connect/disconnect boundary. |
 
 ### UART Interface Pins
 
@@ -158,6 +153,26 @@ GPIOPinConfigure(GPIO_PA4_U3TX);
 GPIOPinConfigure(GPIO_PA5_U3RX);
 GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_4 | GPIO_PIN_5);
 ```
+
+#### Host-side device nodes: `/dev/ttyUSB0` vs `/dev/ttyUSB1`
+
+Linux assigns `/dev/ttyUSB*` numbers by enumeration order, so the UART3 adapter can appear as `/dev/ttyUSB0` on one host and `/dev/ttyUSB1` on another.
+
+Recommended solutions:
+
+1) Use stable names under `/dev/serial/by-id/` (best).
+
+- `ls -l /dev/serial/by-id/`
+- Then pass that path into the tooling (examples):
+  - `make capture UART3_DEV=/dev/serial/by-id/<your-uart3-adapter>`
+  - `python3 tools/uart_session.py --uart3 /dev/serial/by-id/<your-uart3-adapter>`
+
+2) Override Makefile variables per invocation (simple):
+
+- `make capture UART3_DEV=/dev/ttyUSB0`
+- `make auto UART3_DEV=/dev/ttyUSB1`
+
+This avoids editing the Makefile per host.
 
 ### Session Detection Pin
 
