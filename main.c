@@ -67,6 +67,7 @@ extern void * _sbrk(ptrdiff_t incr);
 #include "timebase.h"
 #include "tach.h"
 #include "pwmin.h"
+#include "bothin.h"
 #include "tsyn.h"
 #include "tach_default.h"
 
@@ -946,6 +947,9 @@ int main(void)
 
             /* Periodic PWM-input reporting to UART0 if enabled (PWMIN command). */
             pwmin_task();
+
+            /* Periodic combined reporting to UART0 if enabled (BOTHIN command). */
+            bothin_task();
 
             if (g_uart3_gotcha_pending) {
                 g_uart3_gotcha_pending = false;

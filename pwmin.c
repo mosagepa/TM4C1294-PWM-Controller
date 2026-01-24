@@ -45,6 +45,8 @@ static uint8_t g_pwmin_pf3_pctl_nibble = 0x7U;
 static volatile bool g_pwmin_enabled = false;
 static volatile bool g_pwmin_reporting = false;
 
+static volatile bool g_pwmin_print_enabled = true;
+
 static volatile bool g_pwmin_verbose = false;
 
 static uint32_t g_sysclk_hz = 0;
@@ -491,6 +493,7 @@ void pwmin_init(uint32_t sysclk_hz)
     g_sysclk_hz = sysclk_hz;
     g_pwmin_enabled = false;
     g_pwmin_reporting = false;
+    g_pwmin_print_enabled = true;
     g_next_report_ms = 0;
 }
 
@@ -511,9 +514,10 @@ bool pwmin_is_enabled(void)
     return g_pwmin_enabled;
 }
 
-void pwmin_set_reporting(bool enabled)
+void pwmin_set_reporting_ex(bool enabled, bool print_enabled)
 {
     g_pwmin_reporting = enabled;
+    g_pwmin_print_enabled = print_enabled;
     g_next_report_ms = timebase_millis() + 1000U;
 
     if (enabled) {
@@ -536,9 +540,51 @@ void pwmin_set_reporting(bool enabled)
     }
 }
 
+void pwmin_set_reporting(bool enabled)
+{
+    pwmin_set_reporting_ex(enabled, true);
+}
+
 bool pwmin_is_reporting(void)
 {
     return g_pwmin_reporting;
+}
+
+bool pwmin_is_printing(void)
+{
+    return g_pwmin_reporting && g_pwmin_print_enabled;
+}
+
+bool pwmin_get_last_duty_x10(uint32_t *duty_x10_out)
+{
+    if (!duty_x10_out) return false;
+
+    uint32_t period;
+    uint32_t high;
+    bool have_period;
+    bool have_high;
+
+    IntMasterDisable();
+    if (g_pwmin_gpio_capture) {
+        period = g_last_period_cycles32;
+        high = g_last_high_cycles32;
+        have_period = g_have_period32;
+        have_high = g_have_high32;
+    } else {
+        period = g_last_period;
+        high = g_last_high;
+        have_period = g_have_period;
+        have_high = g_have_high;
+    }
+    IntMasterEnable();
+
+    if (!have_period || !have_high || period == 0U) {
+        *duty_x10_out = 0U;
+        return false;
+    }
+
+    *duty_x10_out = (uint32_t)((((uint64_t)high * 1000ULL) + ((uint64_t)period / 2ULL)) / (uint64_t)period);
+    return true;
 }
 
 bool pwmin_get_last(uint32_t *freq_hz_out, uint32_t *duty_percent_out)
@@ -616,24 +662,26 @@ void pwmin_task(void)
         freq_x10 = (uint32_t)((((uint64_t)g_sysclk_hz * 10ULL) + ((uint64_t)period / 2ULL)) / (uint64_t)period);
     }
 
-    uart0_puts("PWMIN: f=");
-    uart0_put_u32(freq);
-    uart0_puts("Hz duty=");
-    uart0_put_u32_1dp(duty_x10);
-    uart0_puts("%\r\n");
-
-    /* Preserve the useful debug counters, but only in verbose mode. */
-    if (g_pwmin_verbose) {
-        uart0_puts("PWMIN DBG: f=");
-        uart0_put_u32_1dp(freq_x10);
+    if (g_pwmin_print_enabled) {
+        uart0_puts("PWMIN: f=");
+        uart0_put_u32(freq);
         uart0_puts("Hz duty=");
         uart0_put_u32_1dp(duty_x10);
-        uart0_puts("% period_cycles=");
-        uart0_put_u32(period);
-        uart0_puts(" high_cycles=");
-        uart0_put_u32(high);
-        uart0_puts(" edges=");
-        uart0_put_u32(edges);
-        uart0_puts("\r\n");
+        uart0_puts("%\r\n");
+
+        /* Preserve the useful debug counters, but only in verbose mode. */
+        if (g_pwmin_verbose) {
+            uart0_puts("PWMIN DBG: f=");
+            uart0_put_u32_1dp(freq_x10);
+            uart0_puts("Hz duty=");
+            uart0_put_u32_1dp(duty_x10);
+            uart0_puts("% period_cycles=");
+            uart0_put_u32(period);
+            uart0_puts(" high_cycles=");
+            uart0_put_u32(high);
+            uart0_puts(" edges=");
+            uart0_put_u32(edges);
+            uart0_puts("\r\n");
+        }
     }
 }

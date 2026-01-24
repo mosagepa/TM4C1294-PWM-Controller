@@ -21,6 +21,11 @@ bool pwmin_is_enabled(void);
 void pwmin_set_reporting(bool enabled);
 bool pwmin_is_reporting(void);
 
+/* Extended reporting control: allow capture/reporting to run while
+	suppressing the normal 1 Hz UART0 print (useful for combined modes). */
+void pwmin_set_reporting_ex(bool enabled, bool print_enabled);
+bool pwmin_is_printing(void);
+
 /* Enable/disable verbose diagnostic output on UART0.
  * This is intended to be toggled via a separate CLI command (not PWMIN).
  */
@@ -38,6 +43,9 @@ void pwmin_task(void);
 
 /* Latest measured values (snapshotted from ISR-updated state). */
 bool pwmin_get_last(uint32_t *freq_hz_out, uint32_t *duty_percent_out);
+
+/* Latest measured duty in 0.1% units (e.g. 543 => 54.3%). */
+bool pwmin_get_last_duty_x10(uint32_t *duty_x10_out);
 
 /* Called from GPIOFIntHandler when PF3 interrupt is enabled for PWMIN.
  * (Internal hook; safe to call even when PWMIN is disabled.)

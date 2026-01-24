@@ -30,7 +30,11 @@ static volatile bool g_copy_to_pm3 = false;
 static volatile bool g_tach_reporting = false;
 static uint32_t g_next_report_ms = 0;
 static uint32_t g_last_report_ms = 0;
-static uint32_t g_report_suppress = 0;
+static uint32_t g_print_suppress = 0;
+static volatile bool g_tach_print_enabled = true;
+
+static volatile uint32_t g_last_rpm = 0;
+static volatile bool g_have_last_rpm = false;
 
 static volatile uint32_t g_loopback_expected_hz = 0;
 
@@ -217,13 +221,20 @@ bool tach_is_capture_enabled(void)
 
 void tach_set_reporting(bool enabled)
 {
+    tach_set_reporting_ex(enabled, true);
+}
+
+void tach_set_reporting_ex(bool enabled, bool print_enabled)
+{
     g_tach_reporting = enabled;
+    g_tach_print_enabled = print_enabled;
+
     uint32_t now = timebase_millis();
     g_next_report_ms = now + 500U;
     g_last_report_ms = now;
-    g_report_suppress = enabled ? 2U : 0U;
+    g_print_suppress = enabled ? 2U : 0U;
 
-    if (enabled) {
+    if (enabled && print_enabled) {
         uart0_puts("TACHIN ON: gpio_base=0x");
         uart0_put_hex32((uint32_t)TACH_GPIO_BASE);
         uart0_puts(" pin_mask=0x");
@@ -244,6 +255,22 @@ void tach_set_reporting(bool enabled)
 bool tach_is_reporting(void)
 {
     return g_tach_reporting;
+}
+
+bool tach_is_printing(void)
+{
+    return g_tach_reporting && g_tach_print_enabled;
+}
+
+bool tach_get_last_rpm(uint32_t *rpm_out)
+{
+    if (!rpm_out) return false;
+    IntMasterDisable();
+    uint32_t rpm = g_last_rpm;
+    bool have = g_have_last_rpm;
+    IntMasterEnable();
+    *rpm_out = have ? rpm : 0U;
+    return have;
 }
 
 void tach_set_loopback_expected_hz(uint32_t expected_hz)
@@ -292,6 +319,12 @@ void tach_task(void)
      */
      uint32_t freq_x10 = (uint32_t)((((uint64_t)pulses * 10000ULL) + ((uint64_t)dt_ms / 2ULL)) / (uint64_t)dt_ms);
 
+    /* Always update last computed values (even if printing is suppressed). */
+    IntMasterDisable();
+    g_last_rpm = rpm;
+    g_have_last_rpm = true;
+    IntMasterEnable();
+
     uint32_t expected_hz = g_loopback_expected_hz;
     uint32_t expected_pulses = 0;
     bool have_expect = (expected_hz != 0U);
@@ -301,11 +334,16 @@ void tach_task(void)
         expected_pulses = expected_hz / 2U;
     }
 
-    /* Suppress the first two reports after enabling to avoid confusing
+    if (!g_tach_print_enabled) {
+        (void)freq_x10;
+        return;
+    }
+
+    /* Suppress the first two prints after enabling to avoid confusing
        transient data during peripheral/pin switching.
     */
-    if (g_report_suppress > 0U) {
-        g_report_suppress--;
+    if (g_print_suppress > 0U) {
+        g_print_suppress--;
         return;
     }
 

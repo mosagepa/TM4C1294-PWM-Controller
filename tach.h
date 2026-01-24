@@ -40,6 +40,14 @@ bool tach_is_capture_enabled(void);
 void tach_set_reporting(bool enabled);
 bool tach_is_reporting(void);
 
+/* Extended reporting control: allow tach_task sampling to run while
+	suppressing the normal 0.5 s UART0 print (useful for combined modes). */
+void tach_set_reporting_ex(bool enabled, bool print_enabled);
+bool tach_is_printing(void);
+
+/* Last computed implied RPM (integer), updated by tach_task(). */
+bool tach_get_last_rpm(uint32_t *rpm_out);
+
 /* Loopback self-test helper: when expected_hz is nonzero, tach_task prints an OK/FAIL hint. */
 void tach_set_loopback_expected_hz(uint32_t expected_hz);
 uint32_t tach_get_loopback_expected_hz(void);

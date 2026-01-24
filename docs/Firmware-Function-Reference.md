@@ -218,6 +218,9 @@ Parses and executes one complete command line.
   - `TACHIN ON` — start printing RPM on UART0 every 0.5s.
   - `TACHIN OFF` — stop printing RPM on UART0.
 
+  - `BOTHIN ON` — start printing combined PWM duty + tach RPM on UART0 every 1s.
+  - `BOTHIN OFF` — stop printing the combined line.
+
   - `PWMIN ON` — start printing PWM-in on UART0 every 1s (frequency + duty only).
   - `PWMIN OFF` — stop printing PWM-in on UART0.
   - `PWMINDBG ON` — enable PWMIN verbose diagnostics on UART0.
@@ -488,6 +491,26 @@ The debug prints used to diagnose capture failures are preserved, but are **gate
 With `PWMINDBG ON`, the 1 Hz reporting includes an additional line like:
 
 - `PWMIN DBG: f=<Hz.t>Hz duty=<pct.t>% period_cycles=<n> high_cycles=<n> edges=<n>`
+
+---
+
+## bothin.c / bothin.h
+
+Coupled “lab friendly” reporting mode that prints **only** two measurements on UART0:
+
+- PWM input duty with **0.1%** resolution
+- Tach input RPM as **5 digits** (zero padded)
+
+### Command
+
+- `BOTHIN ON`: enables BOTHIN output and ensures both measurement engines are running, while suppressing their individual periodic prints.
+- `BOTHIN OFF`: stops BOTHIN output and restores the previous PWMIN/TACHIN reporting/printing state.
+
+### Output format (UART0)
+
+- `BOTHIN: duty=<pct.t>% rpm=<00000..99999>`
+
+Note: BOTHIN suppresses the first **2** 1-second reports after enabling (to avoid printing transient startup values).
 
 ---
 

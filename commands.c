@@ -11,6 +11,7 @@
 
 #include "tach.h"
 #include "pwmin.h"
+#include "bothin.h"
 #include "tsyn.h"
 #include "tach_default.h"
 
@@ -60,6 +61,8 @@ static void cmd_help(void)
     ui_uart3_puts("  TACHIN OFF  Stop printing RPM on UART0\r\n");
     ui_uart3_puts("  PWMIN ON    Start printing PWM-in on UART0 every 1s (f + duty only)\r\n");
     ui_uart3_puts("  PWMIN OFF   Stop printing PWM-in on UART0\r\n");
+    ui_uart3_puts("  BOTHIN ON   Start printing combined duty+rpm on UART0 every 1s\r\n");
+    ui_uart3_puts("  BOTHIN OFF  Stop printing combined duty+rpm\r\n");
     ui_uart3_puts("  PWMINDBG ON     Enable PWMIN verbose diagnostics on UART0\r\n");
     ui_uart3_puts("  PWMINDBG OFF    Disable PWMIN verbose diagnostics\r\n");
     ui_uart3_puts("  PWMINDBG DUMP   Print one-time PWMIN diagnostic dump\r\n");
@@ -484,6 +487,41 @@ static void cmd_tachin(const char *arg)
     ui_uart3_prompt_once();
 }
 
+static void cmd_bothin(const char *arg)
+{
+    if (!arg || *arg == '\0') {
+        bothin_set_enabled(true);
+        ui_uart3_puts("\r\nOK: BOTHIN ON (printing duty+rpm on UART0)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    char mode[8];
+    size_t i = 0;
+    while (arg[i] && i + 1 < sizeof(mode)) {
+        mode[i] = (char)my_toupper((unsigned char)arg[i]);
+        i++;
+    }
+    mode[i] = '\0';
+
+    if (strcmp(mode, "ON") == 0) {
+        bothin_set_enabled(true);
+        ui_uart3_puts("\r\nOK: BOTHIN ON (printing duty+rpm on UART0)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(mode, "OFF") == 0) {
+        bothin_set_enabled(false);
+        ui_uart3_puts("\r\nOK: BOTHIN OFF\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    ui_uart3_puts("\r\nERROR: invalid value. Use: BOTHIN ON | BOTHIN OFF\r\n");
+    ui_uart3_prompt_once();
+}
+
 static void cmd_exit(const char *arg)
 {
     if (arg && *arg != '\0') {
@@ -638,6 +676,11 @@ void commands_process_line(const char *line)
 
     if (strcmp(tok, "TACHIN") == 0) {
         cmd_tachin(strtok_r(NULL, " \t", &saveptr));
+        return;
+    }
+
+    if (strcmp(tok, "BOTHIN") == 0) {
+        cmd_bothin(strtok_r(NULL, " \t", &saveptr));
         return;
     }
 
