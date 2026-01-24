@@ -388,7 +388,9 @@ This comes from:
 - For a 2-pulses-per-rev fan: `RPM = (pulses/sec) * 30 = 60 * pulses_in_window`
 
 - Prints one line on UART0:
-  - `TACH pulses=<n> rejects=<n> rpm=<n>`
+  - `TACH pulses=<n> rejects=<n> f=<Hz.t>Hz rpm=<n>`
+
+Note: after `TACHIN ON`, the firmware suppresses the **first 2 report windows** to avoid printing unstable/transient measurements during peripheral/pin switching.
 
 ### Compile-time configuration knobs
 

@@ -29,6 +29,8 @@ static volatile bool g_copy_to_pm3 = false;
 
 static volatile bool g_tach_reporting = false;
 static uint32_t g_next_report_ms = 0;
+static uint32_t g_last_report_ms = 0;
+static uint32_t g_report_suppress = 0;
 
 static volatile uint32_t g_loopback_expected_hz = 0;
 
@@ -133,6 +135,20 @@ static void uart0_put_u32(uint32_t v)
     }
 }
 
+static void uart0_put_u32_1dp_minwidth4(uint32_t value_x10)
+{
+    /* Minimal printf("%4.1f")-style formatting without floats.
+       Pads a leading space for 0.0 .. 9.9 to improve scanability.
+       For values >= 10.0, no padding is added.
+    */
+    if (value_x10 < 100U) {
+        uart0_puts(" ");
+    }
+    uart0_put_u32(value_x10 / 10U);
+    uart0_puts(".");
+    uart0_put_u32(value_x10 % 10U);
+}
+
 static void uart0_put_hex32(uint32_t v)
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -202,7 +218,10 @@ bool tach_is_capture_enabled(void)
 void tach_set_reporting(bool enabled)
 {
     g_tach_reporting = enabled;
-    g_next_report_ms = timebase_millis() + 500U;
+    uint32_t now = timebase_millis();
+    g_next_report_ms = now + 500U;
+    g_last_report_ms = now;
+    g_report_suppress = enabled ? 2U : 0U;
 
     if (enabled) {
         uart0_puts("TACHIN ON: gpio_base=0x");
@@ -248,6 +267,12 @@ void tach_task(void)
 
     g_next_report_ms += 500U;
 
+    uint32_t dt_ms = now - g_last_report_ms;
+    g_last_report_ms = now;
+    if (dt_ms == 0U) {
+        dt_ms = 1U;
+    }
+
     /* Atomically snapshot and clear pulse count. */
     uint32_t pulses;
     uint32_t rejects;
@@ -262,6 +287,11 @@ void tach_task(void)
        pulses_per_sec = pulses / 0.5 = 2*pulses => RPM = 60*pulses. */
     uint32_t rpm = pulses * 60U;
 
+     /* Bare tach pulse frequency (falling edges per second), 0.1 Hz resolution.
+         freq_x10 = round(pulses * 10000 / dt_ms)
+     */
+     uint32_t freq_x10 = (uint32_t)((((uint64_t)pulses * 10000ULL) + ((uint64_t)dt_ms / 2ULL)) / (uint64_t)dt_ms);
+
     uint32_t expected_hz = g_loopback_expected_hz;
     uint32_t expected_pulses = 0;
     bool have_expect = (expected_hz != 0U);
@@ -271,12 +301,21 @@ void tach_task(void)
         expected_pulses = expected_hz / 2U;
     }
 
+    /* Suppress the first two reports after enabling to avoid confusing
+       transient data during peripheral/pin switching.
+    */
+    if (g_report_suppress > 0U) {
+        g_report_suppress--;
+        return;
+    }
+
     uart0_puts("TACH pulses=");
     uart0_put_u32(pulses);
     uart0_puts(" rejects=");
     uart0_put_u32(rejects);
-    uart0_puts(" rpm=");
-    uart0_put_u32(rpm);
+    uart0_puts(" f=");
+    uart0_put_u32_1dp_minwidth4(freq_x10);
+    uart0_puts("Hz");
 
     if (have_expect) {
         /* Allow a small tolerance to avoid false negatives due to window alignment. */
@@ -291,5 +330,9 @@ void tach_task(void)
         uart0_put_u32(expected_pulses);
         uart0_puts(ok ? " OK" : " FAIL");
     }
+
+    /* Keep RPM as the last datum in the line. */
+    uart0_puts(" rpm=");
+    uart0_put_u32(rpm);
     uart0_puts("\r\n");
 }
