@@ -36,5 +36,3 @@ __NETBRIDGE_WORKING_BROXMOX/
 # Local repro notes
 /tools/test_scripts/*_repro.txt
 
-# Local scratch key-value dumps
-*.kvset
