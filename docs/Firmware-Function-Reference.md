@@ -238,6 +238,8 @@ Parses and executes one complete command line.
   - `DEBUG ON` — enable UART0 diagnostics.
   - `DEBUG OFF` — disable UART0 diagnostics.
 
+  - `LSAMPLES` — show accumulated counts of suppressed outlier samples (PWMIN + TACHIN) since boot.
+
 Deprecated compatibility aliases:
 
   - `TSYN ON` / `TSYN OFF` — legacy aliases retained for compatibility (maps to `TSYN BOOT BEGIN/END`).

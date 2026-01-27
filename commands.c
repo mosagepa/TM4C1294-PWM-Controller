@@ -75,6 +75,7 @@ static void cmd_help(void)
     ui_uart3_puts("  EXIT        Close UART3 session\r\n");
     ui_uart3_puts("  DEBUG ON    Enable UART0 diagnostics\r\n");
     ui_uart3_puts("  DEBUG OFF   Disable UART0 diagnostics (default)\r\n");
+    ui_uart3_puts("  LSAMPLES    Show suppressed (outlier) sample counts\r\n");
     ui_uart3_prompt_once();
 }
 
@@ -569,6 +570,33 @@ static void cmd_debug(const char *arg)
     ui_uart3_prompt_once();
 }
 
+static void cmd_lsamples(const char *arg)
+{
+    if (arg && *arg != '\0') {
+        ui_uart3_puts("\r\nERROR: LSAMPLES takes no arguments\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    const uint32_t pwmin_supp = pwmin_get_suppressed_samples();
+    const uint32_t tach_supp = tach_get_suppressed_samples();
+
+    char num[11];
+    ui_uart3_puts("\r\nLSAMPLES (since boot):\r\n");
+
+    ui_uart3_puts("  PWMIN suppressed=");
+    u32_to_dec(num, sizeof(num), pwmin_supp);
+    ui_uart3_puts(num);
+    ui_uart3_puts("\r\n");
+
+    ui_uart3_puts("  TACH  suppressed=");
+    u32_to_dec(num, sizeof(num), tach_supp);
+    ui_uart3_puts(num);
+    ui_uart3_puts("\r\n");
+
+    ui_uart3_prompt_once();
+}
+
 static void cmd_psyn(const char *arg)
 {
     if (!arg || *arg == '\0') {
@@ -671,6 +699,11 @@ void commands_process_line(const char *line)
 
     if (strcmp(tok, "DEBUG") == 0) {
         cmd_debug(strtok_r(NULL, " \t", &saveptr));
+        return;
+    }
+
+    if (strcmp(tok, "LSAMPLES") == 0) {
+        cmd_lsamples(strtok_r(NULL, " \t", &saveptr));
         return;
     }
 

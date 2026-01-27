@@ -48,6 +48,9 @@ bool tach_is_printing(void);
 /* Last computed implied RPM (integer), updated by tach_task(). */
 bool tach_get_last_rpm(uint32_t *rpm_out);
 
+/* Count of outlier samples suppressed (not printed / not accepted as last-valid), since boot. */
+uint32_t tach_get_suppressed_samples(void);
+
 /* Loopback self-test helper: when expected_hz is nonzero, tach_task prints an OK/FAIL hint. */
 void tach_set_loopback_expected_hz(uint32_t expected_hz);
 uint32_t tach_get_loopback_expected_hz(void);

@@ -47,6 +47,9 @@ bool pwmin_get_last(uint32_t *freq_hz_out, uint32_t *duty_percent_out);
 /* Latest measured duty in 0.1% units (e.g. 543 => 54.3%). */
 bool pwmin_get_last_duty_x10(uint32_t *duty_x10_out);
 
+/* Count of outlier samples suppressed (not printed / not accepted as last-valid), since boot. */
+uint32_t pwmin_get_suppressed_samples(void);
+
 /* Called from GPIOFIntHandler when PF3 interrupt is enabled for PWMIN.
  * (Internal hook; safe to call even when PWMIN is disabled.)
  */

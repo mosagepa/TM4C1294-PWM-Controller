@@ -18,6 +18,14 @@
 #define TACH_MIN_EDGE_US 200U
 #endif
 
+/* Plausibility bounds used to suppress single-window glitch spikes. */
+#ifndef TACH_VALID_MAX_RPM
+#define TACH_VALID_MAX_RPM 99999U
+#endif
+#ifndef TACH_VALID_MAX_FREQ_X10
+#define TACH_VALID_MAX_FREQ_X10 50000U /* 5000.0 Hz */
+#endif
+
 /* Count of detected TACH pulses (falling edges). Updated in ISR. */
 static volatile uint32_t g_tach_pulses = 0;
 static volatile uint32_t g_tach_rejects = 0;
@@ -35,6 +43,8 @@ static volatile bool g_tach_print_enabled = true;
 
 static volatile uint32_t g_last_rpm = 0;
 static volatile bool g_have_last_rpm = false;
+
+static volatile uint32_t g_tach_suppressed_samples = 0;
 
 static volatile uint32_t g_loopback_expected_hz = 0;
 
@@ -273,6 +283,14 @@ bool tach_get_last_rpm(uint32_t *rpm_out)
     return have;
 }
 
+uint32_t tach_get_suppressed_samples(void)
+{
+    IntMasterDisable();
+    uint32_t v = g_tach_suppressed_samples;
+    IntMasterEnable();
+    return v;
+}
+
 void tach_set_loopback_expected_hz(uint32_t expected_hz)
 {
     g_loopback_expected_hz = expected_hz;
@@ -319,11 +337,24 @@ void tach_task(void)
      */
      uint32_t freq_x10 = (uint32_t)((((uint64_t)pulses * 10000ULL) + ((uint64_t)dt_ms / 2ULL)) / (uint64_t)dt_ms);
 
-    /* Always update last computed values (even if printing is suppressed). */
-    IntMasterDisable();
-    g_last_rpm = rpm;
-    g_have_last_rpm = true;
-    IntMasterEnable();
+    /* Validate sample: suppress absurd one-off values (noise/glitches). */
+    bool valid = true;
+    if (rpm > TACH_VALID_MAX_RPM) valid = false;
+    if (freq_x10 > TACH_VALID_MAX_FREQ_X10) valid = false;
+
+    if (valid) {
+        /* Update last valid values (even if printing is suppressed). */
+        IntMasterDisable();
+        g_last_rpm = rpm;
+        g_have_last_rpm = true;
+        IntMasterEnable();
+    } else {
+        /* Count and suppress this window entirely. */
+        IntMasterDisable();
+        g_tach_suppressed_samples++;
+        IntMasterEnable();
+        return;
+    }
 
     uint32_t expected_hz = g_loopback_expected_hz;
     uint32_t expected_pulses = 0;

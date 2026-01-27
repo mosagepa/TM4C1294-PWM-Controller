@@ -51,6 +51,14 @@ static volatile bool g_pwmin_verbose = false;
 
 static uint32_t g_sysclk_hz = 0;
 
+/* Print/acceptance plausibility bounds (helps suppress one-off glitch samples). */
+#ifndef PWMIN_VALID_MIN_HZ
+#define PWMIN_VALID_MIN_HZ 5000U
+#endif
+#ifndef PWMIN_VALID_MAX_HZ
+#define PWMIN_VALID_MAX_HZ 60000U
+#endif
+
 /* ISR-updated capture state (16-bit timer deltas are sufficient at 24.9kHz). */
 static volatile uint32_t g_last_rise = 0;
 static volatile bool g_have_rise = false;
@@ -77,6 +85,14 @@ static volatile uint32_t g_last_period_cycles32 = 0;
 static volatile bool g_have_period32 = false;
 static volatile uint32_t g_last_high_cycles32 = 0;
 static volatile bool g_have_high32 = false;
+
+/* Last valid (plausible) measurement snapshot for consumers (e.g. BOTHIN). */
+static volatile uint32_t g_last_valid_freq_hz = 0;
+static volatile uint32_t g_last_valid_duty_x10 = 0;
+static volatile bool g_have_last_valid = false;
+
+/* Count of detected outlier samples that were suppressed. */
+static volatile uint32_t g_pwmin_suppressed_samples = 0;
 
 static uint32_t g_next_report_ms = 0;
 
@@ -555,70 +571,44 @@ bool pwmin_is_printing(void)
     return g_pwmin_reporting && g_pwmin_print_enabled;
 }
 
-bool pwmin_get_last_duty_x10(uint32_t *duty_x10_out)
-{
-    if (!duty_x10_out) return false;
-
-    uint32_t period;
-    uint32_t high;
-    bool have_period;
-    bool have_high;
-
-    IntMasterDisable();
-    if (g_pwmin_gpio_capture) {
-        period = g_last_period_cycles32;
-        high = g_last_high_cycles32;
-        have_period = g_have_period32;
-        have_high = g_have_high32;
-    } else {
-        period = g_last_period;
-        high = g_last_high;
-        have_period = g_have_period;
-        have_high = g_have_high;
-    }
-    IntMasterEnable();
-
-    if (!have_period || !have_high || period == 0U) {
-        *duty_x10_out = 0U;
-        return false;
-    }
-
-    *duty_x10_out = (uint32_t)((((uint64_t)high * 1000ULL) + ((uint64_t)period / 2ULL)) / (uint64_t)period);
-    return true;
-}
-
 bool pwmin_get_last(uint32_t *freq_hz_out, uint32_t *duty_percent_out)
 {
     if (!freq_hz_out || !duty_percent_out) return false;
 
-    uint32_t period;
-    uint32_t high;
-    bool have_period;
-    bool have_high;
-
     IntMasterDisable();
-    if (g_pwmin_gpio_capture) {
-        period = g_last_period_cycles32;
-        high = g_last_high_cycles32;
-        have_period = g_have_period32;
-        have_high = g_have_high32;
-    } else {
-        period = g_last_period;
-        high = g_last_high;
-        have_period = g_have_period;
-        have_high = g_have_high;
-    }
+    const uint32_t f = g_last_valid_freq_hz;
+    const uint32_t duty_x10 = g_last_valid_duty_x10;
+    const bool have = g_have_last_valid;
     IntMasterEnable();
 
-    if (!have_period || !have_high || period == 0U) {
-        *freq_hz_out = 0;
-        *duty_percent_out = 0;
+    if (!have) {
+        *freq_hz_out = 0U;
+        *duty_percent_out = 0U;
         return false;
     }
 
-    *freq_hz_out = (g_sysclk_hz / period);
-    *duty_percent_out = (high * 100U) / period;
+    *freq_hz_out = f;
+    *duty_percent_out = duty_x10 / 10U;
     return true;
+}
+
+bool pwmin_get_last_duty_x10(uint32_t *duty_x10_out)
+{
+    if (!duty_x10_out) return false;
+    IntMasterDisable();
+    const uint32_t duty_x10 = g_last_valid_duty_x10;
+    const bool have = g_have_last_valid;
+    IntMasterEnable();
+    *duty_x10_out = have ? duty_x10 : 0U;
+    return have;
+}
+
+uint32_t pwmin_get_suppressed_samples(void)
+{
+    IntMasterDisable();
+    uint32_t v = g_pwmin_suppressed_samples;
+    IntMasterEnable();
+    return v;
 }
 
 void pwmin_task(void)
@@ -656,21 +646,50 @@ void pwmin_task(void)
     uint32_t freq = 0U;
     uint32_t duty_x10 = 0U;
     uint32_t freq_x10 = 0U;
+    bool have_sample = false;
     if (have_period && have_high && period != 0U) {
+        have_sample = true;
         freq = g_sysclk_hz / period;
         duty_x10 = (uint32_t)((((uint64_t)high * 1000ULL) + ((uint64_t)period / 2ULL)) / (uint64_t)period);
         freq_x10 = (uint32_t)((((uint64_t)g_sysclk_hz * 10ULL) + ((uint64_t)period / 2ULL)) / (uint64_t)period);
     }
 
+    bool valid = false;
+    if (have_sample) {
+        /* Additional sanity checks: avoid single-sample spikes (e.g. 400kHz). */
+        if (freq >= PWMIN_VALID_MIN_HZ && freq <= PWMIN_VALID_MAX_HZ && duty_x10 <= 1000U && high <= period) {
+            valid = true;
+        }
+    }
+
+    if (valid) {
+        IntMasterDisable();
+        g_last_valid_freq_hz = freq;
+        g_last_valid_duty_x10 = duty_x10;
+        g_have_last_valid = true;
+        IntMasterEnable();
+    } else if (have_sample) {
+        /* We had a measurement, but it was implausible. Count it and suppress output/acceptance. */
+        IntMasterDisable();
+        g_pwmin_suppressed_samples++;
+        IntMasterEnable();
+        return;
+    }
+
     if (g_pwmin_print_enabled) {
-        uart0_puts("PWMIN: f=");
-        uart0_put_u32(freq);
-        uart0_puts("Hz duty=");
-        uart0_put_u32_1dp(duty_x10);
-        uart0_puts("%\r\n");
+        if (valid) {
+            uart0_puts("PWMIN: f=");
+            uart0_put_u32(freq);
+            uart0_puts("Hz duty=");
+            uart0_put_u32_1dp(duty_x10);
+            uart0_puts("%\r\n");
+        } else {
+            /* No measurement yet (or missing), keep prior behavior: show zeros. */
+            uart0_puts("PWMIN: f=0Hz duty=0.0%\r\n");
+        }
 
         /* Preserve the useful debug counters, but only in verbose mode. */
-        if (g_pwmin_verbose) {
+        if (g_pwmin_verbose && valid) {
             uart0_puts("PWMIN DBG: f=");
             uart0_put_u32_1dp(freq_x10);
             uart0_puts("Hz duty=");
