@@ -70,6 +70,7 @@ extern void * _sbrk(ptrdiff_t incr);
 #include "bothin.h"
 #include "tsyn.h"
 #include "tach_default.h"
+#include "psu_tachmap.h"
 
 
 uint32_t g_ui32SysClock;
@@ -860,6 +861,7 @@ int main(void)
     tach_init();
     pwmin_init(g_ui32SysClock);
     tsyn_init(g_ui32SysClock);
+    psu_tachmap_init();
 
     /* Load/apply persistent default behavior (fallback is PHASE1L). */
     tach_default_init();
@@ -907,6 +909,7 @@ int main(void)
         while (ROM_GPIOPinRead(DTR_PORT, DTR_PIN)) {
             /* Keep BOOT profile running even without an active UART3 session. */
             tachsyn_boot_task();
+            psu_tachmap_task();
             SysCtlDelay(g_ui32SysClock / (1000 * 100));
         }
 
@@ -944,6 +947,9 @@ int main(void)
 
             /* Advance TSYN BOOT profile if enabled (updates PM3 TACHSYN). */
             tachsyn_boot_task();
+
+            /* PSU PWM->TACHSYN mapping (PM3 synthetic feedback), if enabled. */
+            psu_tachmap_task();
 
             /* Periodic PWM-input reporting to UART0 if enabled (PWMIN command). */
             pwmin_task();

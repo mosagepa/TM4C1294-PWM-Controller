@@ -215,6 +215,13 @@ Parses and executes one complete command line.
   - `TSYN COPY END` — stop mirroring and restore the persisted `TACH DEFAULT`.
   - `TSYN STATUS` — show tach generator status.
 
+  - `PSUTACH ON` — enable dynamic mapping from sensed PWMIN duty → synthetic TACHSYN on PM3.
+  - `PSUTACH OFF` — disable mapping and restore the persisted `TACH DEFAULT`.
+  - `PSUTACH PHASE 1|2` — select mapping regime (Phase2 is an explicit/user-triggered override).
+  - `PSUTACH P2RPM n` — set the Phase2 minimum RPM clamp (n in RPM).
+  - `PSUTACH RATE n` — set synthesized RPM ramp rate in rpm/s (0 disables).
+  - `PSUTACH STATUS` — show mapper settings.
+
   - `TACHIN ON` — start printing RPM on UART0 every 0.5s.
   - `TACHIN OFF` — stop printing RPM on UART0.
 
@@ -518,6 +525,33 @@ Coupled “lab friendly” reporting mode that prints **only** two measurements 
 - `BOTHIN: duty=<pct.t>% rpm=<00000..99999>`
 
 Note: BOTHIN suppresses the first **2** 1-second reports after enabling (to avoid printing transient startup values).
+
+---
+
+## psu_tachmap.c / psu_tachmap.h
+
+Dynamic PSU-feedback mode:
+
+- Reads PSU PWM demand from PF3 via the PWMIN engine (duty only).
+- Drives PM3 using **TACHSYN continuous** so the PSU sees a synthetic tach feedback.
+
+Why there are “phases”:
+
+- In the observed logs, the PSU PWM duty stays roughly **constant** (~47–48%) while the fan RPM jumps from ~6300 RPM to ~11k+ RPM.
+- That means the “Phase2 boost” moment **cannot be inferred from duty alone**, so Phase2 is intentionally an explicit/user-triggered mode.
+
+UART3 commands:
+
+- `PSUTACH ON|OFF|STATUS`
+- `PSUTACH PHASE 1|2`
+- `PSUTACH P2RPM <rpm>` (minimum RPM clamp used in Phase2 when duty is high)
+- `PSUTACH RATE <rpm_per_s>` (0 disables rate limiting)
+
+Implementation notes:
+
+- Uses a small Phase1 LUT (duty→RPM) with linear interpolation, then converts RPM → Hz assuming **2 pulses/rev**.
+- Applies a ramp limiter so the output doesn’t step violently.
+- When disabled, stops TACHSYN and restores the persisted `TACH DEFAULT`.
 
 ---
 

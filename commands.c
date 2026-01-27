@@ -14,6 +14,7 @@
 #include "bothin.h"
 #include "tsyn.h"
 #include "tach_default.h"
+#include "psu_tachmap.h"
 
 #ifndef PSYN_MIN
 #define PSYN_MIN 5
@@ -57,6 +58,11 @@ static void cmd_help(void)
     ui_uart3_puts("  TSYN COPY BEGIN  Mirror TACHIN -> TACHOUT (PF1 -> PM3)\r\n");
     ui_uart3_puts("  TSYN COPY END    Stop mirroring and restore TACH DEFAULT\r\n");
     ui_uart3_puts("  TSYN STATUS      Show tach generator status\r\n");
+    ui_uart3_puts("  PSUTACH ON/OFF   Map sensed PWMIN duty -> synthetic TACHSYN on PM3\r\n");
+    ui_uart3_puts("  PSUTACH PHASE 1|2     Select mapping regime (Phase2 is user-triggered)\r\n");
+    ui_uart3_puts("  PSUTACH P2RPM n       Set Phase2 minimum RPM clamp (default ~11000)\r\n");
+    ui_uart3_puts("  PSUTACH RATE n        Set RPM ramp rate (rpm/s), 0 disables\r\n");
+    ui_uart3_puts("  PSUTACH STATUS        Show current PSUTACH settings\r\n");
     ui_uart3_puts("  TACHIN ON   Start printing RPM on UART0 every 0.5s\r\n");
     ui_uart3_puts("  TACHIN OFF  Stop printing RPM on UART0\r\n");
     ui_uart3_puts("  PWMIN ON    Start printing PWM-in on UART0 every 1s (f + duty only)\r\n");
@@ -94,6 +100,11 @@ static void cmd_clear(const char *arg)
 
 static void cmd_phase_apply(uint32_t pwm_percent, uint32_t tachsyn_hz, const char *label)
 {
+    if (psu_tachmap_is_enabled()) {
+        ui_uart3_puts("\r\nWARNING: PSUTACH is enabled. Disable it (PSUTACH OFF) before using PHASE test commands.\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
     if (tachsyn_boot_is_running()) {
         ui_uart3_puts("\r\nWARNING: TSYN BOOT is in progress. PHASE testing commands are not allowed until this completes!\r\n");
         ui_uart3_prompt_once();
@@ -133,6 +144,12 @@ static void cmd_tsyn(const char *arg1, const char *arg2)
 {
     if (!arg1 || *arg1 == '\0') {
         ui_uart3_puts("\r\nERROR: missing value. Use: TSYN STATUS | TSYN BOOT BEGIN|END | TSYN COPY BEGIN|END\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (psu_tachmap_is_enabled()) {
+        ui_uart3_puts("\r\nERROR: PSUTACH is enabled and owns PM3. Use PSUTACH OFF before TSYN commands.\r\n");
         ui_uart3_prompt_once();
         return;
     }
@@ -656,6 +673,141 @@ static void cmd_psyn(const char *arg)
     ui_uart3_prompt_once();
 }
 
+static void cmd_psutach(const char *arg1, const char *arg2)
+{
+    if (!arg1 || *arg1 == '\0') {
+        ui_uart3_puts("\r\nERROR: missing value. Use: PSUTACH ON|OFF|STATUS | PSUTACH PHASE 1|2 | PSUTACH P2RPM n | PSUTACH RATE n\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    char a1[12];
+    size_t i = 0;
+    while (arg1[i] && i + 1 < sizeof(a1)) {
+        a1[i] = (char)my_toupper((unsigned char)arg1[i]);
+        i++;
+    }
+    a1[i] = '\0';
+
+    char a2[12];
+    a2[0] = '\0';
+    if (arg2 && *arg2) {
+        size_t j = 0;
+        while (arg2[j] && j + 1 < sizeof(a2)) {
+            a2[j] = (char)my_toupper((unsigned char)arg2[j]);
+            j++;
+        }
+        a2[j] = '\0';
+    }
+
+    if (strcmp(a1, "STATUS") == 0) {
+        ui_uart3_puts("\r\nSTATUS:\r\n");
+        ui_uart3_puts("  PSUTACH: ");
+        ui_uart3_puts(psu_tachmap_is_enabled() ? "ON\r\n" : "OFF\r\n");
+        ui_uart3_puts("  PHASE: ");
+        ui_uart3_puts(psu_tachmap_get_phase() == PSU_TACHMAP_PHASE2 ? "2\r\n" : "1\r\n");
+
+        char num[11];
+        ui_uart3_puts("  P2RPM: ");
+        u32_to_dec(num, sizeof(num), psu_tachmap_get_phase2_min_rpm());
+        ui_uart3_puts(num);
+        ui_uart3_puts("\r\n");
+
+        ui_uart3_puts("  RATE: ");
+        u32_to_dec(num, sizeof(num), psu_tachmap_get_ramp_rpm_per_s());
+        ui_uart3_puts(num);
+        ui_uart3_puts(" rpm/s\r\n");
+
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(a1, "ON") == 0) {
+        if (tachsyn_boot_is_running() || tachsyn_copy_is_running() || tach_loopback_is_running()) {
+            ui_uart3_puts("\r\nERROR: Stop TSYN BOOT/COPY and TACH LOOPBACK before PSUTACH ON\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        psu_tachmap_set_enabled(true);
+        ui_uart3_puts("\r\nOK: PSUTACH ON\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(a1, "OFF") == 0) {
+        psu_tachmap_set_enabled(false);
+        ui_uart3_puts("\r\nOK: PSUTACH OFF (restored TACH DEFAULT)\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(a1, "PHASE") == 0) {
+        if (a2[0] == '\0') {
+            ui_uart3_puts("\r\nERROR: Use PSUTACH PHASE 1|2\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        if (strcmp(a2, "1") == 0) {
+            psu_tachmap_set_phase(PSU_TACHMAP_PHASE1);
+            ui_uart3_puts("\r\nOK: PSUTACH PHASE 1\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        if (strcmp(a2, "2") == 0) {
+            psu_tachmap_set_phase(PSU_TACHMAP_PHASE2);
+            ui_uart3_puts("\r\nOK: PSUTACH PHASE 2\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        ui_uart3_puts("\r\nERROR: Use PSUTACH PHASE 1|2\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(a1, "P2RPM") == 0) {
+        if (!arg2 || *arg2 == '\0') {
+            ui_uart3_puts("\r\nERROR: Use PSUTACH P2RPM n\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+
+        char *endptr = NULL;
+        long val = strtol(arg2, &endptr, 10);
+        if (!endptr || *endptr != '\0' || val < 0) {
+            ui_uart3_puts("\r\nERROR: invalid number. Use PSUTACH P2RPM n\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        psu_tachmap_set_phase2_min_rpm((uint32_t)val);
+        ui_uart3_puts("\r\nOK: PSUTACH P2RPM set\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    if (strcmp(a1, "RATE") == 0) {
+        if (!arg2 || *arg2 == '\0') {
+            ui_uart3_puts("\r\nERROR: Use PSUTACH RATE n\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+
+        char *endptr = NULL;
+        long val = strtol(arg2, &endptr, 10);
+        if (!endptr || *endptr != '\0' || val < 0) {
+            ui_uart3_puts("\r\nERROR: invalid number. Use PSUTACH RATE n\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        psu_tachmap_set_ramp_rpm_per_s((uint32_t)val);
+        ui_uart3_puts("\r\nOK: PSUTACH RATE set\r\n");
+        ui_uart3_prompt_once();
+        return;
+    }
+
+    ui_uart3_puts("\r\nERROR: Use PSUTACH ON|OFF|STATUS | PHASE 1|2 | P2RPM n | RATE n\r\n");
+    ui_uart3_prompt_once();
+}
+
 void commands_process_line(const char *line)
 {
     if (!line) {
@@ -684,6 +836,11 @@ void commands_process_line(const char *line)
 
     if (strcmp(tok, "PSYN") == 0) {
         cmd_psyn(strtok_r(NULL, " \t", &saveptr));
+        return;
+    }
+
+    if (strcmp(tok, "PSUTACH") == 0) {
+        cmd_psutach(strtok_r(NULL, " \t", &saveptr), strtok_r(NULL, " \t", &saveptr));
         return;
     }
 
