@@ -440,6 +440,11 @@ Board note (TI TM4C1294 Connected LaunchPad, per `spmu365c.pdf`):
 - `PWMINDBG OFF`: disables verbose diagnostics
 - `PWMINDBG DUMP`: prints a one-time diagnostic dump (UART0)
 
+Outlier suppression:
+
+- PWMIN samples with frequency outside **24.8–25.2 kHz** are treated as glitches (not printed; counted in `LSAMPLES`).
+- Bounds are compile-time tunable via `PWMIN_VALID_MIN_HZ` / `PWMIN_VALID_MAX_HZ`.
+
 ### Technique and rationale (Jan 2026)
 
 This firmware originally implemented PWM sensing using **Timer1B capture** (PF3/T1CCP1). In practice, during bench testing we observed:

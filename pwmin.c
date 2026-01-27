@@ -53,10 +53,10 @@ static uint32_t g_sysclk_hz = 0;
 
 /* Print/acceptance plausibility bounds (helps suppress one-off glitch samples). */
 #ifndef PWMIN_VALID_MIN_HZ
-#define PWMIN_VALID_MIN_HZ 5000U
+#define PWMIN_VALID_MIN_HZ 24800U
 #endif
 #ifndef PWMIN_VALID_MAX_HZ
-#define PWMIN_VALID_MAX_HZ 60000U
+#define PWMIN_VALID_MAX_HZ 25200U
 #endif
 
 /* ISR-updated capture state (16-bit timer deltas are sufficient at 24.9kHz). */
