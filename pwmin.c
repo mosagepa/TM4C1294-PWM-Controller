@@ -17,6 +17,7 @@
 #include "driverlib/rom.h"
 
 #include "timebase.h"
+#include "tach.h"
 
 /* PWMIN capture pinning:
  *   PF3 / T1CCP1 -> Timer1B capture
@@ -96,7 +97,78 @@ static volatile uint32_t g_pwmin_suppressed_samples = 0;
 
 static uint32_t g_next_report_ms = 0;
 
+/* PWMINDBG session + regime-change tracking.
+        A "regime change" is a >15% relative change in PWM duty and/or tach RPM.
+
+        IMPORTANT GATING RULE:
+        - Regime-change WARNING messages are emitted ONLY when TACHIN reporting is
+            active AND we have a valid RPM baseline.
+        - While TACHIN is inactive, we still update internal PWM baselines but we
+            never emit regime-change warnings (and we ignore the implied/zero RPM).
+*/
+static bool g_dbg_session_active = false;
+static uint32_t g_dbg_last_regime_sec = 0;
+
+static bool g_dbg_prev_tach_active = false;
+
+static bool g_dbg_have_baseline_duty = false;
+static uint32_t g_dbg_last_duty_pct = 0;
+
+static bool g_dbg_have_baseline_rpm = false;
+static uint32_t g_dbg_last_rpm = 0;
+
+static bool g_dbg_warning_pending = false;
+static uint32_t g_dbg_pending_new_regime_sec = 0;
+static uint32_t g_dbg_prev_duty_pct = 0;
+static uint32_t g_dbg_new_duty_pct = 0;
+static uint32_t g_dbg_prev_rpm = 0;
+static uint32_t g_dbg_new_rpm = 0;
+
+static void uart0_puts(const char *s);
 static void uart0_put_u32(uint32_t v);
+
+static void uart0_put_2d(uint32_t v)
+{
+    v %= 100U;
+    ROM_UARTCharPut(UART0_BASE, (char)('0' + (v / 10U)));
+    ROM_UARTCharPut(UART0_BASE, (char)('0' + (v % 10U)));
+}
+
+static void uart0_put_hhmmss(uint32_t uptime_sec)
+{
+    uint32_t hh = (uptime_sec / 3600U) % 100U;
+    uint32_t mm = (uptime_sec / 60U) % 60U;
+    uint32_t ss = uptime_sec % 60U;
+    uart0_put_2d(hh);
+    uart0_puts(":");
+    uart0_put_2d(mm);
+    uart0_puts(":");
+    uart0_put_2d(ss);
+}
+
+static void uart0_put_u32_zpad5(uint32_t v)
+{
+    if (v > 99999U) {
+        uart0_put_u32(v);
+        return;
+    }
+
+    uint32_t div = 10000U;
+    while (div > 0U) {
+        uint32_t digit = (v / div) % 10U;
+        ROM_UARTCharPut(UART0_BASE, (char)('0' + digit));
+        div /= 10U;
+    }
+}
+
+static bool rel_change_gt_15pct(uint32_t prev, uint32_t cur)
+{
+    if (prev == 0U) {
+        return (cur != 0U);
+    }
+    uint32_t delta = (cur > prev) ? (cur - prev) : (prev - cur);
+    return (delta * 100U) > (prev * 15U);
+}
 
 static void uart0_puts(const char *s)
 {
@@ -303,6 +375,21 @@ static void pwmin_gpio_capture_enable(void)
 void pwmin_set_verbose(bool enabled)
 {
     g_pwmin_verbose = enabled;
+}
+
+void pwmin_dbg_session_start(void)
+{
+    /* Seed the baseline timestamp from the moment PWMINDBG ON is issued.
+       Baseline values are populated lazily on the first valid sample(s). */
+    uint32_t now_sec = timebase_millis() / 1000U;
+    g_dbg_session_active = true;
+    g_dbg_last_regime_sec = now_sec;
+    g_dbg_warning_pending = false;
+    g_dbg_have_baseline_duty = false;
+    g_dbg_have_baseline_rpm = false;
+    g_dbg_last_duty_pct = 0U;
+    g_dbg_last_rpm = 0U;
+    g_dbg_prev_tach_active = false;
 }
 
 bool pwmin_is_verbose(void)
@@ -690,6 +777,114 @@ void pwmin_task(void)
 
         /* Preserve the useful debug counters, but only in verbose mode. */
         if (g_pwmin_verbose && valid) {
+            const uint32_t now_sec = now_ms / 1000U;
+            const uint32_t duty_pct = (duty_x10 + 5U) / 10U;
+            bool armed_warning_this_tick = false;
+
+            /* Regime-change detection (armed by PWMINDBG ON). */
+            if (g_dbg_session_active) {
+                bool tach_active = tach_is_reporting();
+                uint32_t rpm = 0U;
+                bool have_rpm = false;
+                if (tach_active != g_dbg_prev_tach_active) {
+                    /* Edge-triggered handling so TACHIN ON captures a fresh baseline,
+                       and TACHIN OFF prevents any pending warning from leaking out. */
+                    if (!tach_active) {
+                        g_dbg_warning_pending = false;
+                        g_dbg_have_baseline_rpm = false;
+                    } else {
+                        g_dbg_have_baseline_rpm = false;
+                        /* Reset duty baseline at the moment TACHIN becomes active so
+                           we don't compare against a duty baseline captured while
+                           TACHIN was inactive. */
+                        g_dbg_last_duty_pct = duty_pct;
+                        g_dbg_have_baseline_duty = true;
+                    }
+                    g_dbg_prev_tach_active = tach_active;
+                }
+
+                if (tach_active) {
+                    have_rpm = tach_get_last_rpm(&rpm);
+                    if (have_rpm && !g_dbg_have_baseline_rpm) {
+                        /* First valid RPM after TACHIN becomes active seeds the baseline.
+                           Do not emit a regime-change warning on this baseline capture. */
+                        g_dbg_last_rpm = rpm;
+                        g_dbg_have_baseline_rpm = true;
+                    }
+                }
+
+                if (!g_dbg_have_baseline_duty) {
+                    g_dbg_last_duty_pct = duty_pct;
+                    g_dbg_have_baseline_duty = true;
+                }
+
+                bool regime_change = false;
+                if (tach_active && have_rpm && g_dbg_have_baseline_rpm) {
+                    /* Only arm warnings when TACHIN is active and RPM baseline exists.
+                       While active, treat either PWM duty or RPM jumps as a regime change. */
+                    const bool duty_jump = g_dbg_have_baseline_duty && rel_change_gt_15pct(g_dbg_last_duty_pct, duty_pct);
+                    const bool rpm_jump = rel_change_gt_15pct(g_dbg_last_rpm, rpm);
+                    regime_change = duty_jump || rpm_jump;
+                }
+
+                if (regime_change && !g_dbg_warning_pending) {
+                    g_dbg_warning_pending = true;
+                    g_dbg_pending_new_regime_sec = now_sec;
+                    armed_warning_this_tick = true;
+
+                    g_dbg_prev_duty_pct = g_dbg_last_duty_pct;
+                    g_dbg_new_duty_pct = duty_pct;
+
+                    g_dbg_prev_rpm = g_dbg_have_baseline_rpm ? g_dbg_last_rpm : 0U;
+                    g_dbg_new_rpm = (tach_active && have_rpm) ? rpm : g_dbg_prev_rpm;
+                }
+
+                /* Update baselines for the next comparison window. */
+                g_dbg_last_duty_pct = duty_pct;
+                if (tach_active && have_rpm) {
+                    g_dbg_last_rpm = rpm;
+                    g_dbg_have_baseline_rpm = true;
+                }
+            }
+
+            if (g_dbg_warning_pending) {
+                /* Strictly gate the user-visible warning on TACHIN still being active.
+                   If TACHIN was turned off, drop the pending warning silently. */
+                if (!tach_is_reporting()) {
+                    g_dbg_warning_pending = false;
+                }
+            }
+
+            if (g_dbg_warning_pending && !armed_warning_this_tick) {
+                /* 1) Timestamped warning line (printed on the next tick). */
+                uart0_put_hhmmss(now_sec);
+                uart0_puts(" *** WARNING - REGIME CHANGE ****\r\n");
+
+                /* 2) Previous -> new regime timestamps. */
+                uart0_puts("PREV. REGIME ");
+                uart0_put_hhmmss(g_dbg_last_regime_sec);
+                uart0_puts(" --> NEW REGIME: ");
+                uart0_put_hhmmss(g_dbg_pending_new_regime_sec);
+                uart0_puts("\r\n");
+
+                /* 3) Numeric deltas (rounded to integer). */
+                uart0_puts("PWM DUTY ---> ");
+                uart0_put_u32(g_dbg_prev_duty_pct);
+                uart0_puts(" %TO ");
+                uart0_put_u32(g_dbg_new_duty_pct);
+                uart0_puts(" % ;  TACH RPM ---> ");
+                uart0_put_u32_zpad5(g_dbg_prev_rpm);
+                uart0_puts(" to ");
+                uart0_put_u32_zpad5(g_dbg_new_rpm);
+                uart0_puts("\r\n");
+
+                g_dbg_last_regime_sec = g_dbg_pending_new_regime_sec;
+                g_dbg_warning_pending = false;
+            }
+
+            /* Timestamped per-second PWMINDBG line. */
+            uart0_put_hhmmss(now_sec);
+            uart0_puts(" ");
             uart0_puts("PWMIN DBG: f=");
             uart0_put_u32_1dp(freq_x10);
             uart0_puts("Hz duty=");

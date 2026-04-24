@@ -308,7 +308,7 @@ static uint32_t g_ui32CmdIdx = 0;
 
 - `TACHIN ON|OFF`: Start/stop printing tach-derived RPM on UART0
 - `PWMIN ON|OFF`: Start/stop printing PWM-in frequency+duty on UART0 (1Hz)
-- `PWMINDBG ON|OFF|DUMP`: Enable/disable/dump verbose PWMIN diagnostics
+- `PWMINDBG ON|OFF|DUMP`: Enable/disable/dump verbose PWMIN diagnostics (adds `HH:MM:SS` timestamp prefix to `PWMIN DBG` lines; optional TACHIN-gated regime-change warnings)
 
 - `TACH LOOPBACK BEGIN|END`: Self-test mode (jumper PM3->PF1)
 - `TACH DEFAULT <1|2|1L|2L|BOOT|COPY>` and `TACH DEFAULT CURRENT`: Persist/inspect boot default

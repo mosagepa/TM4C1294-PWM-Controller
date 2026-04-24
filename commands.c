@@ -330,6 +330,7 @@ static void cmd_pwmindbg(const char *arg)
 
     if (strcmp(mode, "ON") == 0) {
         pwmin_set_verbose(true);
+        pwmin_dbg_session_start();
         pwmin_set_reporting(true);
         pwmin_debug_dump();
         ui_uart3_puts("\r\nOK: PWMINDBG ON (verbose enabled; diagnostics printed on UART0)\r\n");

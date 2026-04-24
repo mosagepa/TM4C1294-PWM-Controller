@@ -504,7 +504,28 @@ The debug prints used to diagnose capture failures are preserved, but are **gate
 
 With `PWMINDBG ON`, the 1 Hz reporting includes an additional line like:
 
-- `PWMIN DBG: f=<Hz.t>Hz duty=<pct.t>% period_cycles=<n> high_cycles=<n> edges=<n>`
+- `<HH:MM:SS> PWMIN DBG: f=<Hz.t>Hz duty=<pct.t>% period_cycles=<n> high_cycles=<n> edges=<n>`
+
+Where `<HH:MM:SS>` is an **uptime-based** timestamp derived from `timebase_millis()`.
+
+#### Regime-change warnings (TACHIN-gated)
+
+When both `PWMINDBG ON` is enabled **and** `TACHIN ON` reporting is active, the firmware monitors for a **relative change > 15%** in either:
+
+- PWM duty (integer %, derived from the 0.1% duty display), or
+- Tach RPM (integer)
+
+When such a change is detected, the **next** 1 Hz verbose tick prints a 3-line warning block **above** the `PWMIN DBG:` line:
+
+- `<HH:MM:SS> *** WARNING - REGIME CHANGE ****`
+- `PREV. REGIME <HH:MM:SS> --> NEW REGIME: <HH:MM:SS>`
+- `PWM DUTY ---> XX %TO YY % ;  TACH RPM ---> XXXXX to YYYYY`
+
+Notes:
+
+- Warnings are **never printed** unless `TACHIN` reporting is active (PWM-only changes are tracked internally but do not emit warnings).
+- The initial "previous regime" timestamp is seeded at the moment `PWMINDBG ON` is issued.
+- RPM in the warning line is printed as **5 digits** (zero-padded when <= 99999).
 
 ---
 

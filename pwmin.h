@@ -32,6 +32,11 @@ bool pwmin_is_printing(void);
 void pwmin_set_verbose(bool enabled);
 bool pwmin_is_verbose(void);
 
+/* Mark the start of a PWMINDBG verbose session.
+ * Used to seed the regime-change timestamp baseline when PWMINDBG ON is issued.
+ */
+void pwmin_dbg_session_start(void);
+
 /* Print a diagnostic dump to UART0.
  * Safe to call at any time; when PWMIN is actively capturing, this avoids
  * reconfiguring PF3.
