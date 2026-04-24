@@ -124,14 +124,22 @@ static uint32_t g_dbg_new_duty_pct = 0;
 static uint32_t g_dbg_prev_rpm = 0;
 static uint32_t g_dbg_new_rpm = 0;
 
+static void uart0_putc_nb(char c);
 static void uart0_puts(const char *s);
 static void uart0_put_u32(uint32_t v);
+
+static void uart0_putc_nb(char c)
+{
+    /* Non-blocking UART0 output: if TX FIFO is full (e.g. slow 9600 baud),
+       drop characters instead of stalling the main loop and UART3 CLI. */
+    (void)ROM_UARTCharPutNonBlocking(UART0_BASE, (uint8_t)c);
+}
 
 static void uart0_put_2d(uint32_t v)
 {
     v %= 100U;
-    ROM_UARTCharPut(UART0_BASE, (char)('0' + (v / 10U)));
-    ROM_UARTCharPut(UART0_BASE, (char)('0' + (v % 10U)));
+    uart0_putc_nb((char)('0' + (v / 10U)));
+    uart0_putc_nb((char)('0' + (v % 10U)));
 }
 
 static void uart0_put_hhmmss(uint32_t uptime_sec)
@@ -156,7 +164,7 @@ static void uart0_put_u32_zpad5(uint32_t v)
     uint32_t div = 10000U;
     while (div > 0U) {
         uint32_t digit = (v / div) % 10U;
-        ROM_UARTCharPut(UART0_BASE, (char)('0' + digit));
+        uart0_putc_nb((char)('0' + digit));
         div /= 10U;
     }
 }
@@ -174,7 +182,7 @@ static void uart0_puts(const char *s)
 {
     if (!s) return;
     while (*s) {
-        ROM_UARTCharPut(UART0_BASE, *s++);
+        uart0_putc_nb(*s++);
     }
 }
 
@@ -197,7 +205,7 @@ static void uart0_put_u32(uint32_t v)
     } while (n != 0U && i < sizeof(buf));
 
     while (i > 0) {
-        ROM_UARTCharPut(UART0_BASE, buf[--i]);
+        uart0_putc_nb(buf[--i]);
     }
 }
 
