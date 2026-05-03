@@ -123,6 +123,23 @@ LINKER_FILE = TM4C1294XL.ld
 SRC = $(wildcard *.c)
 OBJS = $(SRC:.c=.o)
 
+# When sources come from archives or cross-machine copies, file mtimes may not
+# reliably reflect content changes after `git checkout`. Because we link with
+# `--gc-sections`, stale objects can silently drop whole subsystems.
+#
+# This build-stamp forces a rebuild of objects when the current git HEAD changes,
+# without forcing a full rebuild on every `make`.
+BUILD_STAMP = .buildstamp
+BUILD_ID = $(shell git rev-parse --short HEAD 2>/dev/null || echo nogit)
+
+.PHONY: FORCE
+
+$(BUILD_STAMP): FORCE
+	@cur='$(BUILD_ID)'; \
+	if [ ! -f $(BUILD_STAMP) ] || [ "$$(cat $(BUILD_STAMP) 2>/dev/null)" != "$$cur" ]; then \
+		echo "$$cur" > $(BUILD_STAMP); \
+	fi
+
 
 #==============================================================================
 #                      Rules to make the target
@@ -136,6 +153,8 @@ all: $(OBJS) ${PROJECT_NAME}.axf ${PROJECT_NAME}
 	$(PRINT)
 	@echo Compiling $<...
 	$(CC) -c $(CFLAGS) ${<} -o ${@}
+
+%.o: $(BUILD_STAMP)
 
 ${PROJECT_NAME}.axf: $(OBJS)
 	@echo
@@ -158,7 +177,7 @@ ${PROJECT_NAME}: ${PROJECT_NAME}.axf
 
 # make clean rule
 clean:
-	rm -f *.bin *.o *.d *.axf *.lst
+	rm -f *.bin *.o *.d *.axf *.lst $(BUILD_STAMP)
 
 
 # Rule to load the project to the board
