@@ -14,6 +14,7 @@
 #include "driverlib/pin_map.h"
 #include "driverlib/sysctl.h"
 #include "driverlib/timer.h"
+#include "driverlib/uart.h"
 #include "driverlib/rom.h"
 
 #include "timebase.h"
@@ -124,12 +125,22 @@ static uint32_t g_dbg_new_duty_pct = 0;
 static uint32_t g_dbg_prev_rpm = 0;
 static uint32_t g_dbg_new_rpm = 0;
 
+/* UART0 output mode:
+    - default: non-blocking, may drop chars if TX FIFO full
+    - forced blocking: used for multi-field status lines so they stay coherent */
+static bool g_uart0_force_blocking = false;
+
 static void uart0_putc_nb(char c);
 static void uart0_puts(const char *s);
 static void uart0_put_u32(uint32_t v);
 
 static void uart0_putc_nb(char c)
 {
+    if (g_uart0_force_blocking) {
+        ROM_UARTCharPut(UART0_BASE, (uint8_t)c);
+        return;
+    }
+
     /* Non-blocking UART0 output: if TX FIFO is full (e.g. slow 9600 baud),
        drop characters instead of stalling the main loop and UART3 CLI. */
     (void)ROM_UARTCharPutNonBlocking(UART0_BASE, (uint8_t)c);
@@ -772,6 +783,10 @@ void pwmin_task(void)
     }
 
     if (g_pwmin_print_enabled) {
+        /* Keep each PWMIN line coherent (no mid-line truncation/concatenation). */
+        const bool prev_blocking = g_uart0_force_blocking;
+        g_uart0_force_blocking = true;
+
         if (valid) {
             uart0_puts("PWMIN: f=");
             uart0_put_u32(freq);
@@ -783,8 +798,13 @@ void pwmin_task(void)
             uart0_puts("PWMIN: f=0Hz duty=0.0%\r\n");
         }
 
+        g_uart0_force_blocking = prev_blocking;
+
         /* Preserve the useful debug counters, but only in verbose mode. */
         if (g_pwmin_verbose && valid) {
+            const bool prev_blocking = g_uart0_force_blocking;
+            g_uart0_force_blocking = true;
+
             const uint32_t now_sec = now_ms / 1000U;
             const uint32_t duty_pct = (duty_x10 + 5U) / 10U;
             bool armed_warning_this_tick = false;
@@ -904,6 +924,8 @@ void pwmin_task(void)
             uart0_puts(" edges=");
             uart0_put_u32(edges);
             uart0_puts("\r\n");
+
+            g_uart0_force_blocking = prev_blocking;
         }
     }
 }
