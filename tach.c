@@ -363,9 +363,12 @@ void tach_task(void)
     uint32_t expected_pulses = 0;
     bool have_expect = (expected_hz != 0U);
     if (have_expect) {
-        /* In this firmware, we count falling edges; for a square wave, pulses/sec ~= Hz.
-           Window is 0.5s, so expected pulses ~= Hz/2. */
-        expected_pulses = expected_hz / 2U;
+        /* The loopback jumper drives PF1 with a push-pull square wave from PM3.
+           The GPIO ISR fires on BOTH edges of that signal, so in the 0.5s window
+           we count both the rising and falling transitions:
+             expected_pulses = loopback_hz * 2 edges/cycle * 0.5s = loopback_hz.
+           (NOT hz/2 as would be the case for open-collector falling-edge-only.) */
+        expected_pulses = expected_hz;
     }
 
     if (!g_tach_print_enabled) {
@@ -390,15 +393,16 @@ void tach_task(void)
     uart0_puts("Hz");
 
     if (have_expect) {
-        /* Allow a small tolerance to avoid false negatives due to window alignment. */
-        const uint32_t tol = 2U;
+        /* Tolerance of ±3 absorbs timer jitter and window-alignment error without
+           masking a truly broken connection (which would show 0 or <<expected). */
+        const uint32_t tol = 3U;
         uint32_t low = (expected_pulses > tol) ? (expected_pulses - tol) : 0U;
         uint32_t high = expected_pulses + tol;
         bool ok = (pulses >= low && pulses <= high);
 
         uart0_puts(" loopback_exp_hz=");
         uart0_put_u32(expected_hz);
-        uart0_puts(" exp_pulses_0p5s=");
+        uart0_puts(" exp_edges_0p5s=");
         uart0_put_u32(expected_pulses);
         uart0_puts(ok ? " OK" : " FAIL");
     }
