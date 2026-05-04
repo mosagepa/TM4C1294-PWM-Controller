@@ -200,9 +200,12 @@ void tach_init(void)
 void tach_set_capture_enabled(bool enabled)
 {
     if (enabled) {
-        if (g_tach_capture_enabled) return;
+        /* Always (re)assert FALLING_EDGE so this call is safe after TSYN COPY,
+         * which leaves PF1 in BOTH_EDGES mode.  The early-return was removed
+         * because tach_default_apply() needs the GPIO reset to take effect even
+         * when g_tach_capture_enabled is already true. */
 
-        /* Restore input + pull-up and enable falling-edge interrupt capture. */
+        /* Restore input + pull-up and enforce falling-edge interrupt capture. */
         GPIOPadConfigSet(TACH_GPIO_BASE, TACH_GPIO_PIN, GPIO_STRENGTH_2MA, GPIO_PIN_TYPE_STD_WPU);
         GPIOPinTypeGPIOInput(TACH_GPIO_BASE, TACH_GPIO_PIN);
 

@@ -10,6 +10,7 @@
 #include "timebase.h"
 #include "pwmin.h"
 #include "tach.h"
+#include "psu_tachmap.h"
 
 static volatile bool g_bothin_enabled = false;
 static uint32_t g_next_report_ms = 0;
@@ -121,7 +122,14 @@ void bothin_task(void)
     uint32_t rpm = 0U;
     bool have_rpm = tach_get_last_rpm(&rpm);
 
-    uart0_puts("BOTHIN: duty=");
+    uart0_puts("BOTHIN");
+    const char *regime_tag = psu_tachmap_get_regime_tag();
+    if (psu_tachmap_is_enabled() && regime_tag) {
+        uart0_puts(" [");
+        uart0_puts(regime_tag);
+        uart0_puts("]");
+    }
+    uart0_puts(": duty=");
     if (have_duty) {
         uart0_put_u32_1dp(duty_x10);
         uart0_puts("%");

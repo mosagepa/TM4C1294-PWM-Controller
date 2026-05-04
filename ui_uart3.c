@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "cmdline.h" /* ANSI_* + PROMPT_SYMBOL + UARTSend/UARTDev */
+#include "psu_tachmap.h"
 
 /* Extra ANSI colors for the rainbow banner (ESP32 reference style). */
 #define ANSI_RED          "\x1B[31m"
@@ -65,6 +66,14 @@ void ui_uart3_prompt_once(void)
     if (g_last_output_was_prompt) return;
 
     uart3_send_cstr(ANSI_PROMPT);
+    if (psu_tachmap_is_enabled()) {
+        const char *tag = psu_tachmap_get_regime_tag();
+        if (tag) {
+            uart3_send_cstr("[");
+            uart3_send_cstr(tag);
+            uart3_send_cstr("] ");
+        }
+    }
     uart3_send_cstr(PROMPT_SYMBOL);
     uart3_send_cstr(ANSI_RESET);
 

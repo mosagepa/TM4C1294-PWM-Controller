@@ -34,13 +34,17 @@ A comprehensive PWM control system for the Texas Instruments TM4C1294XL Tiva C A
 ## 📦 Project Structure
 
 ```
-├── main.c                    # Main application with PWM control and testing
-├── diag_uart.h/c            # Custom diagnostic and sprintf replacement functions
+├── main.c                    # Main application with PWM \
+  control and testing
+├── diag_uart.h/c            # Custom diagnostic and \
+  sprintf replacement functions
 ├── cmdline.h/c              # UART command line interface
 ├── syscalls.c               # System call implementations
 ├── malloc_simple.c          # Custom heap memory allocator
-├── TM4C1294XL_startup.c     # Hardware initialization and startup code
-├── TM4C1294XL.ld           # Linker script with memory layout
+├── TM4C1294XL_startup.c     # Hardware initialization \
+  and startup code
+├── TM4C1294XL.ld           # Linker script with memory \
+  layout
 ├── drivers/                 # Hardware abstraction layer
 │   ├── pinout.h/c          # Pin configuration and mapping
 │   └── [other drivers]     # Additional peripheral drivers

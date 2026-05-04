@@ -1,195 +1,165 @@
 #include "psu_tachmap.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+#include "inc/hw_memmap.h"
+#include "driverlib/rom.h"
+#include "driverlib/uart.h"
 
 #include "pwmin.h"
 #include "timebase.h"
 #include "tsyn.h"
 #include "tach_default.h"
 
-/* Standard 4-wire fan tach is typically 2 pulses per revolution. */
+/* Platform callback — implemented in main.c. */
+extern void pwm_set_percent(uint32_t percent);
+
 #define PSU_TACHMAP_PULSES_PER_REV 2U
 
-/* Duty threshold where we treat it as “high” (used for Phase2 clamp). */
-#define PSU_TACHMAP_HIGH_DUTY_X10 450U /* 45.0% */
-
-/* Default Phase2 minimum RPM based on observed IMM2 behavior. */
-#define PSU_TACHMAP_PHASE2_MIN_RPM_DEFAULT 11000U
-
-/* Default RPM ramp limit (0 = disabled). */
-#define PSU_TACHMAP_RAMP_RPM_PER_S_DEFAULT 1500U
-
-typedef struct {
-    uint16_t duty_x10; /* 0.1% units */
-    uint16_t rpm;
-} psu_tachmap_point_t;
-
-/*
- * Phase1 LUT extracted/approximated from REGIMELOGS/ENCENDIDO_02.TXT.
- * This is not meant to be perfect; it just gives a plausible monotonic ramp
- * into the stable ~6.3k RPM regime at ~47-49% duty.
+/* --------------------------------------------------------------------------
+ * Regime table  (sorted ascending by entry_duty_x10 — MUST stay sorted)
+ * --------------------------------------------------------------------------
+ * synth_rpm = what IBM "expects to see" at this operating point.
+ * Add/remove rows here only; algorithm adapts automatically.
  */
-static const psu_tachmap_point_t g_phase1_points[] = {
-    {   0,     0 },
-    {  80,     0 },  /* ~8%: still stopped */
-    { 150,  1500 },
-    { 250,  2000 },
-    { 350,  3200 },
-    { 385,  3800 },
-    { 415,  4020 },
-    { 445,  4920 },
-    { 461,  5520 },
-    { 474,  6120 },
-    { 488,  6360 },
-    { 520,  6500 },
+static const psu_regime_t g_regimes[] = {
+    /* tag          entry_duty_x10   synth_rpm (midpoint of observed real-fan range)  */
+    { "COLD BOOT",  430,              9000 },  /* IBM ~45%  real fan 7500–10500  mid=9000  */
+    { "ESXi ON",    480,             12000 },  /* IBM ~51%  real fan 10500–13500 mid=12000 */
+    { "VCSA ON",    530,             14000 },  /* IBM ~55%  real fan 13500–14500 mid=14000 */
+    { ">ONE VM",    560,             15600 },  /* IBM >57%  real fan 14500–16700 mid=15600 */
 };
+#define REGIME_COUNT ((uint32_t)(sizeof(g_regimes) / sizeof(g_regimes[0])))
 
-static volatile bool g_enabled = false;
-static volatile psu_tachmap_phase_t g_phase = PSU_TACHMAP_PHASE1;
+static volatile bool     g_enabled         = false;
+static volatile int32_t  g_curr_regime_idx = -1;
+static volatile uint32_t g_hyst_x10        = PSU_TACHMAP_HYST_X10_DEFAULT;
+static volatile uint32_t g_fan_fixed_duty  = PSU_TACHMAP_FAN_FIXED_DUTY_DEFAULT;
+static uint32_t          g_last_freq_hz    = 0;
 
-static volatile uint32_t g_phase2_min_rpm = PSU_TACHMAP_PHASE2_MIN_RPM_DEFAULT;
-static volatile uint32_t g_ramp_rpm_per_s = PSU_TACHMAP_RAMP_RPM_PER_S_DEFAULT;
+/* ---- UART0 helpers (non-blocking; same pattern as bothin.c) ------------- */
 
-static uint32_t g_last_task_ms = 0;
-static uint32_t g_curr_rpm = 0;
-static uint32_t g_last_freq_hz = 0;
-
-static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi)
+static void u0_putc(char c)
 {
-    if (v < lo) return lo;
-    if (v > hi) return hi;
-    return v;
+    (void)ROM_UARTCharPutNonBlocking(UART0_BASE, (uint8_t)c);
 }
 
-static uint32_t interp_phase1_rpm(uint32_t duty_x10)
+static void u0_puts(const char *s)
 {
-    const uint32_t count = (uint32_t)(sizeof(g_phase1_points) / sizeof(g_phase1_points[0]));
-    if (count == 0) return 0;
-
-    if (duty_x10 <= g_phase1_points[0].duty_x10) {
-        return g_phase1_points[0].rpm;
-    }
-    if (duty_x10 >= g_phase1_points[count - 1U].duty_x10) {
-        return g_phase1_points[count - 1U].rpm;
-    }
-
-    for (uint32_t i = 0; i + 1U < count; i++) {
-        const uint32_t x0 = g_phase1_points[i].duty_x10;
-        const uint32_t x1 = g_phase1_points[i + 1U].duty_x10;
-        if (duty_x10 < x0 || duty_x10 > x1) {
-            continue;
-        }
-
-        const uint32_t y0 = g_phase1_points[i].rpm;
-        const uint32_t y1 = g_phase1_points[i + 1U].rpm;
-        const uint32_t dx = x1 - x0;
-        const uint32_t xn = duty_x10 - x0;
-
-        if (dx == 0U) {
-            return y0;
-        }
-
-        /* Linear interpolation with rounding. */
-        const int32_t dy = (int32_t)y1 - (int32_t)y0;
-        int32_t y = (int32_t)y0 + (int32_t)(((int64_t)dy * (int64_t)xn + (int64_t)(dx / 2U)) / (int64_t)dx);
-        if (y < 0) y = 0;
-        return (uint32_t)y;
-    }
-
-    return g_phase1_points[0].rpm;
+    if (!s) return;
+    while (*s) { u0_putc(*s++); }
 }
 
-static uint32_t rpm_to_tach_hz(uint32_t rpm)
+static void u0_put_u32(uint32_t v)
+{
+    char buf[11];
+    uint32_t n = v, i = 0;
+    do { buf[i++] = (char)('0' + (n % 10U)); n /= 10U; } while (n && i < sizeof(buf));
+    while (i > 0) { u0_putc(buf[--i]); }
+}
+
+static void u0_put_duty_1dp(uint32_t duty_x10)
+{
+    u0_put_u32(duty_x10 / 10U);
+    u0_putc('.');
+    u0_putc((char)('0' + (duty_x10 % 10U)));
+    u0_putc('%');
+}
+
+/* ---- internal helpers ---------------------------------------------------- */
+
+static uint32_t rpm_to_hz(uint32_t rpm)
 {
     if (rpm == 0U) return 0U;
-
-    /* freq_hz = rpm * PPR / 60; rounding to nearest. */
-    uint64_t num = (uint64_t)rpm * (uint64_t)PSU_TACHMAP_PULSES_PER_REV;
-    uint32_t hz = (uint32_t)((num + 30ULL) / 60ULL);
-    if (hz == 0U) hz = 1U;
-    return hz;
+    uint64_t num = (uint64_t)rpm * PSU_TACHMAP_PULSES_PER_REV;
+    uint32_t hz  = (uint32_t)((num + 30ULL) / 60ULL);
+    return hz ? hz : 1U;
 }
+
+/* Highest regime index whose entry_duty_x10 <= duty_x10; -1 if below all. */
+static int32_t regime_for_duty(uint32_t duty_x10)
+{
+    int32_t result = -1;
+    for (uint32_t i = 0; i < REGIME_COUNT; i++) {
+        if (duty_x10 >= (uint32_t)g_regimes[i].entry_duty_x10) {
+            result = (int32_t)i;
+        }
+    }
+    return result;
+}
+
+static void emit_regime_change(int32_t from_idx, int32_t to_idx, uint32_t duty_x10)
+{
+    const char *from_tag = (from_idx >= 0 && (uint32_t)from_idx < REGIME_COUNT)
+                           ? g_regimes[from_idx].tag : "NONE";
+    const char *to_tag   = (to_idx   >= 0 && (uint32_t)to_idx   < REGIME_COUNT)
+                           ? g_regimes[to_idx].tag   : "NONE";
+    u0_puts("PSUTACH: [");
+    u0_puts(from_tag);
+    u0_puts("] -> [");
+    u0_puts(to_tag);
+    u0_puts("] duty=");
+    u0_put_duty_1dp(duty_x10);
+    u0_puts("\r\n");
+}
+
+/* ---- public API ---------------------------------------------------------- */
 
 void psu_tachmap_init(void)
 {
-    g_enabled = false;
-    g_phase = PSU_TACHMAP_PHASE1;
-
-    g_phase2_min_rpm = PSU_TACHMAP_PHASE2_MIN_RPM_DEFAULT;
-    g_ramp_rpm_per_s = PSU_TACHMAP_RAMP_RPM_PER_S_DEFAULT;
-
-    g_last_task_ms = timebase_millis();
-    g_curr_rpm = 0;
-    g_last_freq_hz = 0;
+    g_enabled         = false;
+    g_curr_regime_idx = -1;
+    g_hyst_x10        = PSU_TACHMAP_HYST_X10_DEFAULT;
+    g_fan_fixed_duty  = PSU_TACHMAP_FAN_FIXED_DUTY_DEFAULT;
+    g_last_freq_hz    = 0;
 }
 
 void psu_tachmap_set_enabled(bool enabled)
 {
     if (enabled) {
         if (g_enabled) return;
-
-        /* Ensure PWMIN capture is running so we can observe the PSU duty. */
-        if (!pwmin_is_enabled()) {
-            pwmin_set_enabled(true);
-        }
-
-        /* Prefer push-pull to match PHASE behavior driving the external interface. */
+        if (!pwmin_is_enabled()) pwmin_set_enabled(true);
         tachsyn_set_drive_mode(TACHSYN_DRIVE_PUSHPULL);
-
-        g_last_task_ms = timebase_millis();
-        g_curr_rpm = 0;
-        g_last_freq_hz = 0;
-        g_enabled = true;
+        g_curr_regime_idx = -1;
+        g_last_freq_hz    = 0;
+        g_enabled         = true;
+        pwm_set_percent(g_fan_fixed_duty);
         return;
     }
-
     if (!g_enabled) return;
-    g_enabled = false;
-
-    /* Stop our synthetic tach and restore the persisted default behavior. */
+    g_enabled         = false;
+    g_curr_regime_idx = -1;
     tachsyn_stop();
     tach_default_apply();
 }
 
-bool psu_tachmap_is_enabled(void)
-{
-    return g_enabled;
-}
+bool psu_tachmap_is_enabled(void) { return g_enabled; }
 
-void psu_tachmap_set_phase(psu_tachmap_phase_t phase)
+void psu_tachmap_set_hyst_x10(uint32_t h)
 {
-    if (phase != PSU_TACHMAP_PHASE1 && phase != PSU_TACHMAP_PHASE2) {
-        return;
-    }
-    g_phase = phase;
+    if (h > 200U) h = 200U;
+    g_hyst_x10 = h;
 }
+uint32_t psu_tachmap_get_hyst_x10(void) { return g_hyst_x10; }
 
-psu_tachmap_phase_t psu_tachmap_get_phase(void)
+void psu_tachmap_set_fan_fixed_duty(uint32_t pct)
 {
-    return g_phase;
+    if (pct < 5U)  pct = 5U;
+    if (pct > 96U) pct = 96U;
+    g_fan_fixed_duty = pct;
+    if (g_enabled) pwm_set_percent(g_fan_fixed_duty);
 }
+uint32_t psu_tachmap_get_fan_fixed_duty(void) { return g_fan_fixed_duty; }
 
-void psu_tachmap_set_phase2_min_rpm(uint32_t rpm)
-{
-    /* Reasonable bounds for safety. */
-    g_phase2_min_rpm = clamp_u32(rpm, 0U, 30000U);
-}
+int psu_tachmap_get_regime_index(void) { return (int)g_curr_regime_idx; }
 
-uint32_t psu_tachmap_get_phase2_min_rpm(void)
+const char *psu_tachmap_get_regime_tag(void)
 {
-    return g_phase2_min_rpm;
-}
-
-void psu_tachmap_set_ramp_rpm_per_s(uint32_t rpm_per_s)
-{
-    /* 0 disables. Upper bound avoids overflow/insane ramps. */
-    g_ramp_rpm_per_s = clamp_u32(rpm_per_s, 0U, 60000U);
-}
-
-uint32_t psu_tachmap_get_ramp_rpm_per_s(void)
-{
-    return g_ramp_rpm_per_s;
+    if (g_curr_regime_idx < 0 || (uint32_t)g_curr_regime_idx >= REGIME_COUNT)
+        return NULL;
+    return g_regimes[g_curr_regime_idx].tag;
 }
 
 void psu_tachmap_task(void)
@@ -197,58 +167,46 @@ void psu_tachmap_task(void)
     if (!g_enabled) return;
 
     uint32_t duty_x10 = 0;
-    if (!pwmin_get_last_duty_x10(&duty_x10)) {
+    if (!pwmin_get_last_duty_x10(&duty_x10)) return;
+
+    /* ---- Regime selection with hysteresis -------------------------------- */
+    int32_t target = regime_for_duty(duty_x10);
+    int32_t prev   = g_curr_regime_idx;
+    int32_t next   = prev;
+
+    if (target > prev) {
+        /* Ascending: immediate. */
+        next = target;
+    } else if (target < prev && prev >= 0) {
+        /* Descending: only when duty drops below (entry – hyst). */
+        uint32_t entry = (uint32_t)g_regimes[prev].entry_duty_x10;
+        uint32_t exit_thresh = (entry > g_hyst_x10) ? (entry - g_hyst_x10) : 0U;
+        if (duty_x10 < exit_thresh) next = target;
+    } else if (prev < 0 && target >= 0) {
+        next = target;
+    }
+
+    if (next != prev) {
+        emit_regime_change(prev, next, duty_x10);
+        g_curr_regime_idx = next;
+        g_last_freq_hz    = 0;
+    }
+
+    /* ---- Drive TACHSYN --------------------------------------------------- */
+    if (g_curr_regime_idx < 0) {
+        if (tachsyn_is_running()) { tachsyn_stop(); g_last_freq_hz = 0; }
         return;
     }
 
-    uint32_t target_rpm = interp_phase1_rpm(duty_x10);
-
-    if (g_phase == PSU_TACHMAP_PHASE2 && duty_x10 >= PSU_TACHMAP_HIGH_DUTY_X10) {
-        if (target_rpm < g_phase2_min_rpm) {
-            target_rpm = g_phase2_min_rpm;
-        }
-    }
-
-    /* Rate limit changes for realism and to avoid huge jumps. */
-    uint32_t now = timebase_millis();
-    uint32_t elapsed_ms = now - g_last_task_ms;
-    if (elapsed_ms > 5000U) {
-        /* If the loop stalled, cap dt so we don’t do a massive jump. */
-        elapsed_ms = 5000U;
-    }
-    g_last_task_ms = now;
-
-    if (g_ramp_rpm_per_s == 0U) {
-        g_curr_rpm = target_rpm;
-    } else {
-        uint32_t max_delta = (g_ramp_rpm_per_s * elapsed_ms) / 1000U;
-        if (max_delta == 0U) max_delta = 1U;
-
-        if (g_curr_rpm < target_rpm) {
-            uint32_t delta = target_rpm - g_curr_rpm;
-            if (delta > max_delta) delta = max_delta;
-            g_curr_rpm += delta;
-        } else if (g_curr_rpm > target_rpm) {
-            uint32_t delta = g_curr_rpm - target_rpm;
-            if (delta > max_delta) delta = max_delta;
-            g_curr_rpm -= delta;
-        }
-    }
-
-    uint32_t freq_hz = rpm_to_tach_hz(g_curr_rpm);
+    uint32_t freq_hz = rpm_to_hz((uint32_t)g_regimes[g_curr_regime_idx].synth_rpm);
 
     if (freq_hz == 0U) {
-        if (tachsyn_is_running()) {
-            tachsyn_stop();
-        }
+        if (tachsyn_is_running()) tachsyn_stop();
         g_last_freq_hz = 0;
         return;
     }
 
-    /* Avoid reprogramming Timer3B too often. */
-    if (tachsyn_is_running() && freq_hz == g_last_freq_hz) {
-        return;
-    }
+    if (tachsyn_is_running() && freq_hz == g_last_freq_hz) return;
 
     g_last_freq_hz = freq_hz;
     tachsyn_set_continuous(freq_hz, 50U);
