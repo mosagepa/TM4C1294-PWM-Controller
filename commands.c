@@ -57,6 +57,8 @@ static void cmd_help(void)
     ui_uart3_puts("  TSYN BOOT END    Stop boot-profile\r\n");
     ui_uart3_puts("  TSYN COPY BEGIN  Mirror TACHIN -> TACHOUT (PF1 -> PM3)\r\n");
     ui_uart3_puts("  TSYN COPY END    Stop mirroring and restore TACH DEFAULT\r\n");
+    ui_uart3_puts("  TSYN CONT <hz>   Force continuous TACHSYN on PM3 at <hz> (0=stop)\r\n");
+    ui_uart3_puts("                   Regime Hz: 300=COLD BOOT 400=ESXi 467=VCSA 520=>1VM\r\n");
     ui_uart3_puts("  TSYN STATUS      Show tach generator status\r\n");
     ui_uart3_puts("  PSUTACH ON/OFF        Map sensed PWMIN duty -> synthetic TACHSYN on PM3\r\n");
     ui_uart3_puts("  PSUTACH STATUS        Show regime, hyst, fanduty\r\n");
@@ -252,6 +254,50 @@ static void cmd_tsyn(const char *arg1, const char *arg2)
         return;
     }
 
+    if (strcmp(a1, "CONT") == 0) {
+        if (tach_loopback_is_running()) {
+            ui_uart3_puts("\r\nERROR: TACH LOOPBACK is running; stop it before TSYN CONT\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        if (tachsyn_boot_is_running()) {
+            ui_uart3_puts("\r\nERROR: TSYN BOOT is running; stop it before TSYN CONT\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        if (tachsyn_copy_is_running()) {
+            ui_uart3_puts("\r\nERROR: TSYN COPY is running; stop it before TSYN CONT\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        if (!arg2 || *arg2 == '\0') {
+            ui_uart3_puts("\r\nERROR: Use TSYN CONT <hz>  (0 = stop; 1–10000 to run)\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        char *endptr = NULL;
+        long hz = strtol(arg2, &endptr, 10);
+        if (!endptr || endptr == arg2 || hz < 0 || hz > 10000) {
+            ui_uart3_puts("\r\nERROR: TSYN CONT <hz>: hz must be 0–10000\r\n");
+            ui_uart3_prompt_once();
+            return;
+        }
+        if (hz == 0) {
+            tachsyn_stop();
+            ui_uart3_puts("\r\nOK: TSYN CONT stopped\r\n");
+        } else {
+            tachsyn_set_drive_mode(TACHSYN_DRIVE_PUSHPULL);
+            tachsyn_set_continuous((uint32_t)hz, 50U);
+            char num[11];
+            u32_to_dec(num, sizeof(num), (uint32_t)hz);
+            ui_uart3_puts("\r\nOK: TSYN CONT ");
+            ui_uart3_puts(num);
+            ui_uart3_puts(" Hz (push-pull, 50% duty on PM3)\r\n");
+        }
+        ui_uart3_prompt_once();
+        return;
+    }
+
     /* Deprecated legacy aliases (keep for compatibility). */
     if (strcmp(a1, "ON") == 0) {
         tachsyn_boot_start();
@@ -267,7 +313,7 @@ static void cmd_tsyn(const char *arg1, const char *arg2)
         return;
     }
 
-    ui_uart3_puts("\r\nERROR: invalid value. Use: TSYN STATUS | TSYN BOOT BEGIN|END | TSYN COPY BEGIN|END\r\n");
+    ui_uart3_puts("\r\nERROR: invalid value. Use: TSYN STATUS | TSYN BOOT BEGIN|END | TSYN COPY BEGIN|END | TSYN CONT <hz>\r\n");
     ui_uart3_prompt_once();
 }
 
