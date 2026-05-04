@@ -405,3 +405,20 @@ Yes: `README.md` links `GHCP_COMMENTS.md` near the top under “AI Collaboration
 
 - PWM setup and update logic (PF2, PWM0, 21.5kHz) was intentionally left unchanged.
 - Tach sensing was added as an **independent** GPIO interrupt path plus a non-blocking periodic reporting task.
+
+---
+
+## Standing workflow instruction — commit policy (added 2026-05-04)
+
+**GitHub Copilot: always ask the user before auto-committing firmware changes.**
+
+On this project the dev box and lab box are separate machines (Ubuntu 24.04 dev,
+Ubuntu 16.04 lab).  The user manually runs `git push origin main` on the dev box
+and `git pull / make clean / make / make flash` on the lab box.  Binary timestamps
+on the dev box are therefore always stale by design and must never be used to infer
+whether the latest firmware has been flashed.
+
+**Rule:** after any substantial firmware change (new feature, bug fix, refactor),
+*ask the user* whether they want a commit prepared — do not commit automatically.
+"Substantial" means any change to `.c` or `.h` source files; trivial edits to
+comments or whitespace-only may still warrant a quick "shall I commit this?".
